@@ -404,6 +404,7 @@ class RadioEngine:
                 downloaded, processed, plan = prepared
                 with self._lock:
                     self._current_episode_id = downloaded.episode.id
+                self._consume_queued_episode(downloaded.episode.id)
                 completed = self._play_episode(downloaded, processed, plan)
                 if self._stop.is_set():
                     break
@@ -411,7 +412,6 @@ class RadioEngine:
                     self._play_now_requested.clear()
                     prepared = self._choose_prepared_episode()
                     continue
-                self._consume_queued_episode(downloaded.episode.id)
                 self._mark_played(downloaded.episode.id)
                 with self._lock:
                     self._current_episode_id = None

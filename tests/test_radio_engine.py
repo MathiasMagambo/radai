@@ -447,7 +447,7 @@ def test_radio_selects_prepared_episode_before_opening_stream() -> None:
     assert events == ["choose", "stream"]
 
 
-def test_prepared_episode_is_consumed_only_after_playback_finishes() -> None:
+def test_queued_episode_is_consumed_when_playback_starts() -> None:
     engine = object.__new__(RadioEngine)
     engine._lock = threading.RLock()
     engine._current_episode_id = None
@@ -476,7 +476,7 @@ def test_prepared_episode_is_consumed_only_after_playback_finishes() -> None:
 
     engine._run()
 
-    assert events == ["choose", "stream", "play", "consume", "mark", "prepare", "choose"]
+    assert events == ["choose", "stream", "consume", "play", "mark", "prepare", "choose"]
 
 
 def test_restart_podcast_is_disabled_by_default() -> None:
