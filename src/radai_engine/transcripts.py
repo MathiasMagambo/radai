@@ -36,7 +36,7 @@ class TranscriptFile:
 
 def fetch_transcript(ref: TranscriptRef, dest_dir: Path, *, timeout: float = 30.0) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
-    request = urllib.request.Request(ref.url, headers={"User-Agent": "radai-agent/0.1"})
+    request = urllib.request.Request(ref.url, headers={"User-Agent": "radai-engine/0.1"})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         body = response.read()
     suffix = _suffix_for_mime(ref.mime)

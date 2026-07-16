@@ -1138,8 +1138,8 @@ class RadioEngine:
             self._status.mode = "music"
             self._status.detail = f"{songs_per_break}-song music break"
             self._status.now_playing = source_name
-        completed: list[str] = []
-        current_id: str | None = None
+        completed_songs = 0
+        current_track_key: tuple[str, tuple[str, ...]] | None = None
         last_poll = 0.0
         deadline = time.monotonic() + 30 * 60
         spotifyd = self._spotifyd
@@ -1159,25 +1159,29 @@ class RadioEngine:
                     deadline += 0.1
                     continue
                 now = time.monotonic()
-                if now - last_poll < 3.0:
+                if now - last_poll < 1.0:
                     continue
                 last_poll = now
                 try:
                     playback = self.spotify_desktop.current_playback()
                 except Exception:
                     continue
-                if playback.track:
+                if playback.track and playback.is_playing:
+                    track_key = (
+                        playback.track.name.strip().casefold(),
+                        tuple(artist.strip().casefold() for artist in playback.track.artists),
+                    )
                     with self._lock:
                         artists = ", ".join(playback.track.artists)
                         self._status.now_playing = f"{playback.track.name} — {artists}"
-                    if playback.track.id != current_id:
-                        if current_id is not None:
-                            completed.append(current_id)
-                            if len(completed) >= songs_per_break:
+                    if track_key != current_track_key:
+                        if current_track_key is not None:
+                            completed_songs += 1
+                            if completed_songs >= songs_per_break:
                                 break
-                        current_id = playback.track.id
+                        current_track_key = track_key
             if (
-                len(completed) < songs_per_break
+                completed_songs < songs_per_break
                 and not self._stop.is_set()
                 and not self._restart_podcast.is_set()
                 and not self._play_now_requested.is_set()

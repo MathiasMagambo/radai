@@ -1,8 +1,8 @@
 import unittest
 from pathlib import Path
 
-from radai_agent.audio import build_prepare_command
-from radai_agent.models import CutRange
+from radai_engine.audio import build_prepare_command
+from radai_engine.models import CutRange
 
 
 class AudioCommandTests(unittest.TestCase):

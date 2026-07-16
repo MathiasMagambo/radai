@@ -21,6 +21,7 @@ const playlistConfirm = $('#playlistConfirm');
 const playlistConfirmText = $('#playlistConfirmText');
 const settingsButton = $('#settingsButton');
 const settingsOverlay = $('#settingsOverlay');
+const settingsControls = Array.from(settingsOverlay.querySelectorAll('input, select'));
 const podcastSelector = $('#podcastSelector');
 const podcastChoiceTitle = $('#podcastChoiceTitle');
 const podcastChoiceChannel = $('#podcastChoiceChannel');
@@ -53,6 +54,7 @@ let streamWanted = false;
 let streamReconnectTimer = null;
 let streamReconnecting = false;
 let channelSources = [];
+let settingsDirty = false;
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -276,13 +278,15 @@ restartPodcast.addEventListener('click', async () => {
 
 function renderSettings(settings) {
   radioSettings = { ...radioSettings, ...settings };
-  $('#pureRadio').checked = radioSettings.playback_mode === 'radio';
-  $('#podcastSelectorEnabled').checked = radioSettings.podcast_selector_enabled;
-  $('#restartPodcastEnabled').checked = radioSettings.restart_current_podcast_enabled;
-  $('#musicPlacement').value = radioSettings.music_placement;
-  $('#songsPerBreak').value = radioSettings.songs_per_break;
-  $('#unplayedEpisodesPerSource').value = radioSettings.unplayed_episodes_per_source;
-  $('#playedEpisodesPerSource').value = radioSettings.played_episodes_per_source;
+  if (!settingsDirty) {
+    $('#pureRadio').checked = radioSettings.playback_mode === 'radio';
+    $('#podcastSelectorEnabled').checked = radioSettings.podcast_selector_enabled;
+    $('#restartPodcastEnabled').checked = radioSettings.restart_current_podcast_enabled;
+    $('#musicPlacement').value = radioSettings.music_placement;
+    $('#songsPerBreak').value = radioSettings.songs_per_break;
+    $('#unplayedEpisodesPerSource').value = radioSettings.unplayed_episodes_per_source;
+    $('#playedEpisodesPerSource').value = radioSettings.played_episodes_per_source;
+  }
   const selectedName = radioSettings.selected_playlist_name || '';
   playlistInput.value = selectedName;
   activePlaylistName.textContent = radioSettings.seed_track_name
@@ -402,7 +406,14 @@ function animateSettings(direction) {
   settingsButton.classList.add(direction === 'open' ? 'roll-clockwise' : 'roll-counterclockwise');
 }
 
+settingsControls.forEach((control) => {
+  control.addEventListener('input', () => { settingsDirty = true; });
+  control.addEventListener('change', () => { settingsDirty = true; });
+});
+
 function openSettings() {
+  settingsDirty = false;
+  renderSettings(radioSettings);
   animateSettings('open');
   settingsOverlay.hidden = false;
   settingsButton.setAttribute('aria-expanded', 'true');
@@ -411,6 +422,7 @@ function openSettings() {
 }
 
 function closeSettings() {
+  settingsDirty = false;
   animateSettings('close');
   settingsOverlay.classList.add('closing');
   settingsButton.setAttribute('aria-expanded', 'false');
@@ -450,6 +462,7 @@ $('#saveSettings').addEventListener('click', async () => {
         played_episodes_per_source: Number($('#playedEpisodesPerSource').value),
       }),
     });
+    settingsDirty = false;
     renderSettings(data.settings);
     if (radioSettings.podcast_selector_enabled) await loadPodcasts();
     closeSettings();

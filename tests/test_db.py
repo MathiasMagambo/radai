@@ -2,8 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from radai_agent.db import connect, list_new_episodes, migrate, upsert_episode, upsert_feed
-from radai_agent.models import PodcastEpisode
+from radai_engine.db import connect, list_new_episodes, migrate, upsert_episode, upsert_feed
+from radai_engine.models import PodcastEpisode
 
 
 class DatabaseTests(unittest.TestCase):

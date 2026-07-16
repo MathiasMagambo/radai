@@ -52,7 +52,7 @@ class _LinkCollector(HTMLParser):
 
 
 def fetch_feed(url: str, etag: str | None = None, last_modified: str | None = None, timeout: float = 20.0) -> FetchResult:
-    request = urllib.request.Request(url, headers={"User-Agent": "radai-agent/0.1"})
+    request = urllib.request.Request(url, headers={"User-Agent": "radai-engine/0.1"})
     if etag:
         request.add_header("If-None-Match", etag)
     if last_modified:

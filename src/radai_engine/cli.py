@@ -15,7 +15,7 @@ from .stream import IcecastClient
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="radai-agent")
+    parser = argparse.ArgumentParser(prog="radai-engine")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("init-db")
     sync = sub.add_parser("sync")

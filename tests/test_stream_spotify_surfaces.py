@@ -3,12 +3,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from radai_agent.config import AppConfig
-from radai_agent.db import connect, migrate
-from radai_agent.service import AgentService
-from radai_agent.spotify import SpotifyDevice
-from radai_agent.spotify_device import find_configured_device
-from radai_agent.stream import discard_recording, keep_recording, recording_command
+from radai_engine.config import AppConfig
+from radai_engine.db import connect, migrate
+from radai_engine.service import EngineService
+from radai_engine.spotify import SpotifyDevice
+from radai_engine.spotify_device import find_configured_device
+from radai_engine.stream import discard_recording, keep_recording, recording_command
 
 
 class FakeSpotify:
@@ -64,7 +64,7 @@ class IntegrationSurfaceTests(unittest.TestCase):
             )
             con = connect(config.db_path)
             migrate(con)
-            service = AgentService(config, con, FakeIcecast(True))
+            service = EngineService(config, con, FakeIcecast(True))
             reply = service.start_stream()
 
             self.assertIn("Stream started", reply)
@@ -84,7 +84,7 @@ class IntegrationSurfaceTests(unittest.TestCase):
             config = AppConfig.from_env({"RADAI_DB_PATH": str(root / "db.sqlite3")})
             con = connect(config.db_path)
             migrate(con)
-            service = AgentService(config, con, FakeIcecast(True))
+            service = EngineService(config, con, FakeIcecast(True))
             reply = service.sync((feed.as_uri(),))
 
             self.assertIn("1 new episode", reply)

@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from radai_agent.transcripts import normalize_transcript_text
+from radai_engine.transcripts import normalize_transcript_text
 
 
 class TranscriptTests(unittest.TestCase):

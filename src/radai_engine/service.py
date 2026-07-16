@@ -15,7 +15,7 @@ from .stream import IcecastClient, discard_recording, keep_recording, next_recor
 
 
 @dataclass
-class AgentState:
+class EngineState:
     podcast_window_sec: int
     music_window_sec: int
     music_mode: str = "playlist"
@@ -26,12 +26,12 @@ class AgentState:
     latest_recording_path: Path | None = None
 
 
-class AgentService:
+class EngineService:
     def __init__(self, config: AppConfig, con: sqlite3.Connection, icecast: IcecastClient | None = None) -> None:
         self.config = config
         self.con = con
         self.icecast = icecast or IcecastClient(config.icecast_url, config.icecast_status_url)
-        self.state = AgentState(config.podcast_window_sec, config.music_window_sec)
+        self.state = EngineState(config.podcast_window_sec, config.music_window_sec)
 
     def sync(self, feed_urls: tuple[str, ...]) -> str:
         if not feed_urls:

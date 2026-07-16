@@ -1,6 +1,6 @@
 import unittest
 
-from radai_agent.rss import parse_feed_xml
+from radai_engine.rss import parse_feed_xml
 
 
 SAMPLE = b'''<?xml version="1.0"?>

@@ -1,8 +1,8 @@
 import unittest
 from pathlib import Path
 
-from radai_agent.models import WindowKind
-from radai_agent.scheduler import PodcastSegment, ScheduleError, build_time_window_schedule
+from radai_engine.models import WindowKind
+from radai_engine.scheduler import PodcastSegment, ScheduleError, build_time_window_schedule
 
 
 class SchedulerTests(unittest.TestCase):

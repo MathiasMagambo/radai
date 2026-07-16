@@ -197,7 +197,7 @@ class SpotifyClient:
             headers={
                 "Authorization": f"Bearer {self.access_token()}",
                 "Content-Type": "application/json",
-                "User-Agent": "radai-agent/0.1",
+                "User-Agent": "radai-engine/0.1",
             },
             method=method,
         )

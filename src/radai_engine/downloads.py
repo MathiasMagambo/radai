@@ -47,7 +47,7 @@ def safe_filename(url: str, fallback_ext: str = ".bin") -> str:
 
 def download_audio(url: str, dest_dir: Path, *, max_bytes: int = 1_500_000_000, timeout: float = 60.0) -> DownloadResult:
     dest_dir.mkdir(parents=True, exist_ok=True)
-    request = urllib.request.Request(url, headers={"User-Agent": "radai-agent/0.1"})
+    request = urllib.request.Request(url, headers={"User-Agent": "radai-engine/0.1"})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() or None
         if content_type and not (content_type.startswith("audio/") or content_type == "application/octet-stream"):

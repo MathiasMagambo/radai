@@ -5,11 +5,11 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
-from radai_agent.deepseek import DeepSeekError
-from radai_agent.models import CutRange, MusicInsertion
-from radai_agent.radio_engine import RadioEngine, RadioSettings, RadioStatus, StateStore, _clean_time, _dedupe_insertions, _merge_cuts, _transcript_chunks
-from radai_agent.spotify_desktop import SpotifyDesktopController
-from radai_agent.web import BufferedAudioStream, _mp3_frame_start, _render_html_template
+from radai_engine.deepseek import DeepSeekError
+from radai_engine.models import CutRange, MusicInsertion
+from radai_engine.radio_engine import RadioEngine, RadioSettings, RadioStatus, StateStore, _clean_time, _dedupe_insertions, _merge_cuts, _transcript_chunks
+from radai_engine.spotify_desktop import SpotifyDesktopController
+from radai_engine.web import BufferedAudioStream, _mp3_frame_start, _render_html_template
 
 
 def test_transcript_chunks_preserve_every_line() -> None:
@@ -139,10 +139,10 @@ def test_spotify_drain_resets_pcm_phase_at_track_boundary(monkeypatch, tmp_path:
                 engine._stop.set()
         return chunk
 
-    monkeypatch.setattr("radai_agent.radio_engine.os.open", lambda *_args: 1)
-    monkeypatch.setattr("radai_agent.radio_engine.os.read", read_chunk)
-    monkeypatch.setattr("radai_agent.radio_engine.os.close", lambda _descriptor: None)
-    monkeypatch.setattr("radai_agent.radio_engine.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("radai_engine.radio_engine.os.open", lambda *_args: 1)
+    monkeypatch.setattr("radai_engine.radio_engine.os.read", read_chunk)
+    monkeypatch.setattr("radai_engine.radio_engine.os.close", lambda _descriptor: None)
+    monkeypatch.setattr("radai_engine.radio_engine.time.sleep", lambda _seconds: None)
 
     engine._drain_spotifyd_audio()
 
@@ -184,6 +184,64 @@ def test_music_break_accepts_spotify_pcm_before_starting_playback() -> None:
 
     assert engine._status.mode == "music"
 
+def test_music_break_honors_song_count_when_tracks_share_album_id(monkeypatch) -> None:
+    engine = object.__new__(RadioEngine)
+    engine._stop = threading.Event()
+    engine._spotify_audio_enabled = threading.Event()
+    engine._restart_podcast = threading.Event()
+    engine._play_now_requested = threading.Event()
+    engine._spotify_audio_ready = threading.Event()
+    engine._pcm_source_active = threading.Event()
+    engine._playback_paused = threading.Event()
+    engine._lock = threading.RLock()
+    engine._status = RadioStatus()
+    engine._spotifyd = SimpleNamespace(poll=lambda: None)
+    engine.spotify_device_name = "Radai Radio"
+    engine.store = SimpleNamespace(
+        settings=SimpleNamespace(
+            songs_per_break=3,
+            seed_track_uri="spotify:track:test",
+            seed_track_name="Test track",
+            active_music_source_uri=None,
+            active_music_source_name=None,
+        ),
+        save=lambda: None,
+    )
+    tracks = iter(
+        SimpleNamespace(
+            is_playing=True,
+            track=SimpleNamespace(id="shared-album", name=name, artists=("Artist",)),
+        )
+        for name in ("First", "Second", "Third", "Fourth")
+    )
+    playback_checks: list[bool] = []
+
+    def current_playback() -> object:
+        playback_checks.append(True)
+        return next(tracks)
+
+    def play_track_radio(*_args, **_kwargs) -> None:
+        engine._spotify_audio_ready.set()
+
+    engine.spotify_desktop = SimpleNamespace(
+        play_track_radio=play_track_radio,
+        current_playback=current_playback,
+    )
+    engine._wait_for_device = lambda: None  # type: ignore[method-assign]
+    paused: list[bool] = []
+    engine._pause_spotify = lambda: paused.append(True)  # type: ignore[method-assign]
+    clock = [0.0]
+    monkeypatch.setattr("radai_engine.radio_engine.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        "radai_engine.radio_engine.time.sleep",
+        lambda _seconds: clock.__setitem__(0, clock[0] + 1.1),
+    )
+
+    engine._play_music_break()
+
+    assert len(playback_checks) == 4
+    assert paused == [True]
+
 
 def test_song_radio_opens_track_menu_and_starts_generated_playlist(monkeypatch) -> None:
     controller = object.__new__(SpotifyDesktopController)
@@ -199,7 +257,7 @@ def test_song_radio_opens_track_menu_and_starts_generated_playlist(monkeypatch) 
     controller.current_playback = (  # type: ignore[method-assign]
         lambda: SimpleNamespace(is_playing=True)
     )
-    monkeypatch.setattr("radai_agent.spotify_desktop.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("radai_engine.spotify_desktop.time.sleep", lambda _seconds: None)
 
     def evaluate(expression: str) -> object:
         if "closest('[role=\"row\"]')" in expression:
@@ -259,7 +317,7 @@ def test_selected_playing_song_radio_switches_back_and_resumes(monkeypatch) -> N
     controller.current_playback = (  # type: ignore[method-assign]
         lambda: SimpleNamespace(is_playing=next(playback))
     )
-    monkeypatch.setattr("radai_agent.spotify_desktop.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("radai_engine.spotify_desktop.time.sleep", lambda _seconds: None)
 
     controller.play_track_radio(
         "Radai Radio",
@@ -289,7 +347,7 @@ def test_selected_paused_song_radio_resumes_without_restart(monkeypatch) -> None
     controller.current_playback = (  # type: ignore[method-assign]
         lambda: SimpleNamespace(is_playing=next(playback))
     )
-    monkeypatch.setattr("radai_agent.spotify_desktop.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("radai_engine.spotify_desktop.time.sleep", lambda _seconds: None)
 
     controller.play_track_radio(
         "Radai Radio",
@@ -498,7 +556,7 @@ def test_podcast_checkpoint_tracks_pcm_written_to_stream(monkeypatch) -> None:
         stdout=BytesIO(bytes(400)),
         wait=lambda timeout: 0,
     )
-    monkeypatch.setattr("radai_agent.radio_engine.subprocess.Popen", lambda *_args, **_kwargs: decoder)
+    monkeypatch.setattr("radai_engine.radio_engine.subprocess.Popen", lambda *_args, **_kwargs: decoder)
 
     engine._play_podcast_segment(
         Path("episode.mp3"),
@@ -651,7 +709,7 @@ def test_channel_preparation_keeps_configured_latest_unplayed_episodes(monkeypat
     engine._prepared_by_id = lambda *_args: None  # type: ignore[method-assign]
     engine._remember_episode = lambda *_args: None  # type: ignore[method-assign]
     monkeypatch.setattr(
-        "radai_agent.radio_engine.list_channel_episodes",
+        "radai_engine.radio_engine.list_channel_episodes",
         lambda *args, **kwargs: (latest, second_latest, third_latest),
     )
 
@@ -659,7 +717,7 @@ def test_channel_preparation_keeps_configured_latest_unplayed_episodes(monkeypat
         selected.append(episode)
         return SimpleNamespace()
 
-    monkeypatch.setattr("radai_agent.radio_engine.download_episode", download)
+    monkeypatch.setattr("radai_engine.radio_engine.download_episode", download)
 
     engine._prepare_channel("channel-a")
 

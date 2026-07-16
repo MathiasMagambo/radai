@@ -81,7 +81,7 @@ class DeepSeekClient:
             headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
-                "User-Agent": "radai-agent/0.1",
+                "User-Agent": "radai-engine/0.1",
             },
             method="POST",
         )

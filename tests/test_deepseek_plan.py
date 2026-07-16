@@ -3,7 +3,7 @@ import unittest
 import urllib.error
 from unittest.mock import patch
 
-from radai_agent.deepseek import DeepSeekClient, DeepSeekError, EpisodePlanningInput, parse_deepseek_plan
+from radai_engine.deepseek import DeepSeekClient, DeepSeekError, EpisodePlanningInput, parse_deepseek_plan
 
 
 class DeepSeekPlanTests(unittest.TestCase):
@@ -88,7 +88,7 @@ class DeepSeekPlanTests(unittest.TestCase):
         )
         client = DeepSeekClient("test-key")
 
-        with patch("radai_agent.deepseek.urllib.request.urlopen", side_effect=error):
+        with patch("radai_engine.deepseek.urllib.request.urlopen", side_effect=error):
             with self.assertRaisesRegex(DeepSeekError, "credits are exhausted"):
                 client.plan_episode(EpisodePlanningInput("ep", "title", "show", "", "text"))
 
@@ -96,7 +96,7 @@ class DeepSeekPlanTests(unittest.TestCase):
         client = DeepSeekClient("test-key")
 
         with patch(
-            "radai_agent.deepseek.urllib.request.urlopen",
+            "radai_engine.deepseek.urllib.request.urlopen",
             side_effect=urllib.error.URLError("timed out"),
         ):
             with self.assertRaisesRegex(DeepSeekError, "not responding"):

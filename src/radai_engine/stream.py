@@ -28,7 +28,7 @@ class IcecastClient:
         self.status_url = status_url
 
     def check_stream(self, *, timeout: float = 5.0) -> StreamStatus:
-        request = urllib.request.Request(self.stream_url, method="GET", headers={"User-Agent": "radai-agent/0.1"})
+        request = urllib.request.Request(self.stream_url, method="GET", headers={"User-Agent": "radai-engine/0.1"})
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return StreamStatus(
@@ -43,7 +43,7 @@ class IcecastClient:
     def read_status_json(self, *, timeout: float = 5.0) -> dict:
         if not self.status_url:
             raise StreamError("Icecast status URL is not configured")
-        request = urllib.request.Request(self.status_url, headers={"User-Agent": "radai-agent/0.1"})
+        request = urllib.request.Request(self.status_url, headers={"User-Agent": "radai-engine/0.1"})
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
 
