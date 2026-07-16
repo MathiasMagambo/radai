@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{SITE_TITLE}}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css?v=9">
+</head>
+<body>
+  <main>
+    <header class="masthead">
+      <div>
+        <p class="eyebrow">{{SITE_TAGLINE}}</p>
+        <h1>{{SITE_NAME}}</h1>
+      </div>
+      <div class="header-actions">
+        <button id="settingsButton" class="icon-button" type="button" aria-label="Open settings" aria-controls="settingsOverlay" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M9.6 2h4.8l.6 2.4 2 .8 2.1-1.3 3 3-1.3 2.1.8 2 2.4.6v4.8l-2.4.6-.8 2 1.3 2.1-3 3-2.1-1.3-2 .8-.6 2.4H9.6L9 21.6l-2-.8-2.1 1.3-3-3L3.2 17l-.8-2L0 14.4V9.6L2.4 9l.8-2-1.3-2.1 3-3L7 3.2l2-.8L9.6 2Z"/>
+            <circle cx="12" cy="12" r="3.2"/>
+          </svg>
+        </button>
+        <div class="live-state" aria-live="polite">
+          <span id="stateDot" class="dot"></span>
+          <span id="stateText">CONNECTING</span>
+        </div>
+      </div>
+    </header>
+
+    <section class="hero panel">
+      <div class="now">
+        <p class="label">NOW PLAYING</p>
+        <div class="now-title">
+          <h2 id="nowPlaying">—</h2>
+          <button id="restartPodcast" class="restart-podcast" type="button" aria-label="Restart current podcast" title="Restart current podcast" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20 11a8 8 0 1 0-2.34 5.66"/>
+              <path d="M20 4v7h-7"/>
+            </svg>
+          </button>
+        </div>
+        <p id="detail" class="muted">Loading radio state…</p>
+        <p id="preparationError" class="preparation-error" role="alert" hidden></p>
+        <p id="podcast" class="podcast"></p>
+        <div id="podcastSelector" class="podcast-selector" hidden>
+          <button id="podcastPrevious" class="podcast-nav" type="button" aria-label="Choose previous prepared podcast">‹</button>
+          <div class="podcast-choice">
+            <div class="podcast-choice-actions">
+              <span class="label">PLAY NEXT</span>
+              <button id="podcastPlayNow" class="podcast-play-now" type="button">PLAY NOW</button>
+            </div>
+            <strong id="podcastChoiceTitle">No prepared podcast</strong>
+            <span id="podcastChoiceChannel" class="muted"></span>
+          </div>
+          <button id="podcastNext" class="podcast-nav" type="button" aria-label="Choose next prepared podcast">›</button>
+        </div>
+      </div>
+      <div class="transport">
+        <button id="startButton" class="primary">START RADIO</button>
+        <button id="stopButton">STOP</button>
+      </div>
+      <div class="stream-player">
+        <button id="streamPlay" class="stream-play" type="button" aria-label="Play live stream">PLAY</button>
+        <div class="stream-readout" aria-live="polite">
+          <span class="stream-name"><i></i>LIVE STREAM</span>
+          <span id="streamStatus">READY</span>
+        </div>
+        <div class="stream-volume">
+          <button id="streamMute" type="button" aria-label="Mute live stream">VOL</button>
+          <input id="streamVolume" type="range" min="0" max="1" step="0.05" value="1" aria-label="Stream volume">
+        </div>
+        <audio id="player" preload="none" src="/stream.mp3"></audio>
+      </div>
+    </section>
+
+    <div class="management-grid">
+      <section class="panel management-panel">
+        <div class="section-head">
+          <div>
+            <p class="label">MUSIC SOURCE</p>
+            <h3>Spotify playlists</h3>
+          </div>
+          <span class="index">01</span>
+        </div>
+        <label for="playlist">Saved playlist</label>
+        <div class="playlist-picker">
+          <input id="playlist" type="search" list="playlistOptions" placeholder="Random saved playlist" autocomplete="off" aria-describedby="playlistHint">
+          <datalist id="playlistOptions"></datalist>
+        </div>
+        <div id="activePlaylist" class="active-source">
+          <span class="label">CURRENT MUSIC SOURCE</span>
+          <strong id="activePlaylistName">Random saved playlist</strong>
+          <div id="playlistConfirm" class="source-confirm" hidden>
+            <span id="playlistConfirmText"></span>
+            <button id="playlistApply" type="button">SWITCH SOURCE</button>
+            <button id="playlistCancel" type="button">KEEP CURRENT</button>
+          </div>
+        </div>
+        <p id="playlistHint" class="hint">Open the dropdown or double-click and type to search every saved Spotify playlist.</p>
+
+      </section>
+
+      <section class="panel management-panel">
+        <div class="section-head">
+          <div>
+            <p class="label">SONG RADIO</p>
+            <h3>Search Spotify</h3>
+          </div>
+          <span class="index">02</span>
+        </div>
+        <form id="searchForm" class="inline-form">
+          <label class="sr-only" for="search">Song or artist</label>
+          <input id="search" type="search" placeholder="Song or artist" autocomplete="off" minlength="2" required>
+          <button type="submit">SEARCH</button>
+        </form>
+        <div id="searchResults" class="results bounded-list" aria-live="polite"></div>
+      </section>
+
+      <section class="panel management-panel podcast-sources">
+        <div class="section-head">
+          <div>
+            <p class="label">PODCAST SOURCES</p>
+            <h3>YouTube</h3>
+          </div>
+          <span class="index">03</span>
+        </div>
+        <nav class="source-pages" aria-label="Podcast source pages">
+          <button class="source-page active" type="button" data-source-page="add">ADD SOURCES</button>
+          <button class="source-page" type="button" data-source-page="list">SOURCES</button>
+          <button class="source-page" type="button" data-source-page="history">HISTORY</button>
+        </nav>
+        <div class="source-page-panel" data-source-panel="add">
+          <form id="channelForm" class="channel-form compact-form">
+            <label class="sr-only" for="channelUrl">YouTube channel URL</label>
+            <input id="channelUrl" type="url" placeholder="youtube.com/@channel" required>
+            <button type="submit">ADD</button>
+          </form>
+          <form id="videoForm" class="channel-form compact-form video-form">
+            <label class="sr-only" for="videoUrl">YouTube video URL</label>
+            <input id="videoUrl" type="url" placeholder="youtube.com/watch?v=…" required>
+            <button type="submit">PREPARE</button>
+          </form>
+          <p id="queuedVideo" class="hint"></p>
+          <div id="videoDecision" class="video-decision" hidden>
+            <span class="label">VIDEO READY</span>
+            <strong id="videoDecisionTitle"></strong>
+            <div>
+              <button id="queueVideo" type="button">QUEUE IT</button>
+              <button id="playVideoNow" class="primary" type="button">PLAY NOW</button>
+            </div>
+          </div>
+        </div>
+        <div class="source-page-panel source-list-panel" data-source-panel="list" hidden>
+          <label class="sr-only" for="sourceSearch">Search podcast sources</label>
+          <input id="sourceSearch" class="source-search" type="search" placeholder="Search sources…" autocomplete="off">
+          <div id="channels" class="channel-list bounded-list"></div>
+        </div>
+        <div class="source-page-panel source-list-panel" data-source-panel="history" hidden>
+          <div id="podcastHistory" class="channel-list history-list bounded-list"></div>
+        </div>
+      </section>
+    </div>
+
+    <div id="settingsOverlay" class="settings-overlay" hidden>
+      <section class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+        <div class="settings-head">
+          <div>
+            <p class="label">RADIO CONTROL</p>
+            <h2 id="settingsTitle">Settings</h2>
+          </div>
+          <button id="settingsClose" class="icon-button close-button" type="button" aria-label="Close settings">×</button>
+        </div>
+        <div class="setting-row">
+          <div>
+            <strong>Pure radio</strong>
+            <p class="hint">Keep broadcasting when this player is paused. Off pauses the shared podcast or music and resumes from the same point.</p>
+          </div>
+          <label class="switch">
+            <input id="pureRadio" type="checkbox">
+            <span></span>
+          </label>
+        </div>
+        <div class="setting-row">
+          <div>
+            <strong>Podcast chooser</strong>
+            <p class="hint">Show controls beneath the podcast title for choosing which prepared episode plays next.</p>
+          </div>
+          <label class="switch">
+            <input id="podcastSelectorEnabled" type="checkbox">
+            <span></span>
+          </label>
+        </div>
+        <div class="setting-row">
+          <div>
+            <strong>Restart current podcast</strong>
+            <p class="hint">Show a restart control beside the current podcast title.</p>
+          </div>
+          <label class="switch">
+            <input id="restartPodcastEnabled" type="checkbox">
+            <span></span>
+          </label>
+        </div>
+        <div class="setting-row stacked">
+          <label for="musicPlacement">Music break placement</label>
+          <select id="musicPlacement">
+            <option value="ads">Replace detected ad breaks</option>
+            <option value="sections">LLM-selected topic sections</option>
+          </select>
+          <p class="hint">LLM-selected breaks are always spaced by at least ten minutes of podcast audio.</p>
+        </div>
+        <div class="setting-row stacked">
+          <label for="unplayedEpisodesPerSource">Latest unplayed podcasts stored per source</label>
+          <input id="unplayedEpisodesPerSource" type="number" min="1" max="20" step="1" value="1">
+          <p class="hint">Prepared in advance and ready for the podcast chooser.</p>
+        </div>
+        <div class="setting-row stacked">
+          <label for="playedEpisodesPerSource">Played podcasts kept per source</label>
+          <input id="playedEpisodesPerSource" type="number" min="1" max="20" step="1" value="1">
+          <p class="hint">Older history remains listed and can be prepared again.</p>
+        </div>
+        <div class="setting-row stacked">
+          <label for="songsPerBreak">Songs per music break</label>
+          <input id="songsPerBreak" type="number" min="1" max="10" step="1" value="3">
+        </div>
+        <button id="saveSettings" class="primary" type="button">SAVE SETTINGS</button>
+      </section>
+    </div>
+    <footer>
+      <span>{{SITE_FOOTER}}</span>
+      <span id="message" role="status"></span>
+    </footer>
+  </main>
+  <script src="/app.js?v=9" defer></script>
+</body>
+</html>

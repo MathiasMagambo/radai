@@ -1,0 +1,15 @@
+[Unit]
+Description=Radai radio control site
+After=network-online.target radai-spotify-desktop.service
+Wants=network-online.target radai-spotify-desktop.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/radai
+EnvironmentFile=/opt/radai/.env
+ExecStart=/opt/radai/.venv/bin/python -m radai_agent.web
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

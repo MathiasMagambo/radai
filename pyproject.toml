@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "radai-agent"
+version = "0.1.0"
+description = "Personal VPS podcast and Spotify stream agent"
+requires-python = ">=3.11"
+dependencies = ["python-dotenv>=1.0", "websocket-client>=1.9"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+radai-agent = "radai_agent.cli:main"
+radai-web = "radai_agent.web:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/radai_agent"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
