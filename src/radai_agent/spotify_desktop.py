@@ -304,12 +304,11 @@ class SpotifyDesktopController:
             return True
         if not state.get("device_active"):
             self.activate_device(device_name)
-        if not self.current_playback().is_playing:
-            self.resume()
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             if self.current_playback().is_playing:
                 return True
+            self.resume()
             time.sleep(0.5)
         raise SpotifyDesktopError(f"Spotify could not resume {radio_title}")
 

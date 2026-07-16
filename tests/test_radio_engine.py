@@ -241,6 +241,35 @@ def test_selected_song_radio_keeps_playing_without_restart() -> None:
 
     assert restarted == []
 
+def test_selected_playing_song_radio_switches_back_and_resumes(monkeypatch) -> None:
+    controller = object.__new__(SpotifyDesktopController)
+    restarted: list[str] = []
+    activated: list[str] = []
+    resumed: list[str] = []
+    playback = iter((False, True))
+    controller._evaluate = lambda _expression: {  # type: ignore[method-assign]
+        "selected": True,
+        "playing": True,
+        "device_active": False,
+    }
+    controller.play_track = lambda *_args, **_kwargs: restarted.append("restart")  # type: ignore[method-assign]
+    controller.activate_device = activated.append  # type: ignore[method-assign]
+    controller.resume = lambda: resumed.append("resume")  # type: ignore[method-assign]
+    controller.current_playback = (  # type: ignore[method-assign]
+        lambda: SimpleNamespace(is_playing=next(playback))
+    )
+    monkeypatch.setattr("radai_agent.spotify_desktop.time.sleep", lambda _seconds: None)
+
+    controller.play_track_radio(
+        "Radai Radio",
+        "spotify:track:test",
+        search_query="Pretty Girls — Odeal",
+    )
+
+    assert restarted == []
+    assert activated == ["Radai Radio"]
+    assert resumed == ["resume"]
+
 
 def test_selected_paused_song_radio_resumes_without_restart(monkeypatch) -> None:
     controller = object.__new__(SpotifyDesktopController)
