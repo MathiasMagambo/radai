@@ -193,6 +193,7 @@ def test_song_radio_opens_track_menu_and_starts_generated_playlist(monkeypatch) 
     controller.play_track = (  # type: ignore[method-assign]
         lambda *args, **kwargs: played.append((*args, kwargs))
     )
+    controller._resume_selected_song_radio = lambda *_args: False  # type: ignore[method-assign]
     controller.activate_device = activated.append  # type: ignore[method-assign]
     controller.current_playback = (  # type: ignore[method-assign]
         lambda: SimpleNamespace(is_playing=True)
@@ -221,6 +222,54 @@ def test_song_radio_opens_track_menu_and_starts_generated_playlist(monkeypatch) 
     ]
     assert browser_steps == ["open-options", "open-radio", "play-radio"]
     assert activated == ["Radai Radio"]
+
+def test_selected_song_radio_keeps_playing_without_restart() -> None:
+    controller = object.__new__(SpotifyDesktopController)
+    restarted: list[str] = []
+    controller._evaluate = lambda _expression: {  # type: ignore[method-assign]
+        "selected": True,
+        "playing": True,
+        "device_active": True,
+    }
+    controller.play_track = lambda *_args, **_kwargs: restarted.append("restart")  # type: ignore[method-assign]
+
+    controller.play_track_radio(
+        "Radai Radio",
+        "spotify:track:test",
+        search_query="Pretty Girls — Odeal",
+    )
+
+    assert restarted == []
+
+
+def test_selected_paused_song_radio_resumes_without_restart(monkeypatch) -> None:
+    controller = object.__new__(SpotifyDesktopController)
+    restarted: list[str] = []
+    activated: list[str] = []
+    resumed: list[str] = []
+    playback = iter((False, True))
+    controller._evaluate = lambda _expression: {  # type: ignore[method-assign]
+        "selected": True,
+        "playing": False,
+        "device_active": False,
+    }
+    controller.play_track = lambda *_args, **_kwargs: restarted.append("restart")  # type: ignore[method-assign]
+    controller.activate_device = activated.append  # type: ignore[method-assign]
+    controller.resume = lambda: resumed.append("resume")  # type: ignore[method-assign]
+    controller.current_playback = (  # type: ignore[method-assign]
+        lambda: SimpleNamespace(is_playing=next(playback))
+    )
+    monkeypatch.setattr("radai_agent.spotify_desktop.time.sleep", lambda _seconds: None)
+
+    controller.play_track_radio(
+        "Radai Radio",
+        "spotify:track:test",
+        search_query="Pretty Girls — Odeal",
+    )
+
+    assert restarted == []
+    assert activated == ["Radai Radio"]
+    assert resumed == ["resume"]
 
 def test_listener_stream_starts_on_a_complete_mp3_frame() -> None:
     frame = b"\xff\xfb\x90\x00" + bytes(413)

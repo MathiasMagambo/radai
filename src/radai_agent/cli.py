@@ -12,8 +12,6 @@ from .spotify import SpotifyClient
 from .spotify_device import ensure_device_ready
 from .spotify_playlists import list_music_sources, sync_playlists
 from .stream import IcecastClient
-from .service import AgentService
-from .telegram_bot import LongPollingBot, TelegramBotClient, build_router
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -28,7 +26,6 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("playlists")
     sub.add_parser("check-spotify-device")
     sub.add_parser("check-stream")
-    sub.add_parser("bot")
     args = parser.parse_args(argv)
 
     config = AppConfig.from_env()
@@ -70,14 +67,6 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         print(f"stream unreachable: {status.error}", file=sys.stderr)
         return 1
-    if args.command == "bot":
-        con = _open_db(config)
-        token = config.require_telegram()
-        service = AgentService(config, con)
-        bot = LongPollingBot(TelegramBotClient(token), build_router(service), config.telegram_allowed_user_ids)
-        offset = None
-        while True:
-            offset = bot.poll_once(offset=offset)
     return 2
 
 

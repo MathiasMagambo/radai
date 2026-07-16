@@ -9,19 +9,6 @@ class ConfigError(ValueError):
     pass
 
 
-def _csv_ints(value: str | None) -> tuple[int, ...]:
-    if not value:
-        return ()
-    ids: list[int] = []
-    for part in value.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        try:
-            ids.append(int(part))
-        except ValueError as exc:
-            raise ConfigError(f"invalid Telegram user id: {part!r}") from exc
-    return tuple(ids)
 
 
 def _int_env(env: dict[str, str], key: str, default: int) -> int:
@@ -39,8 +26,6 @@ def _int_env(env: dict[str, str], key: str, default: int) -> int:
 
 @dataclass(frozen=True)
 class AppConfig:
-    telegram_bot_token: str | None
-    telegram_allowed_user_ids: tuple[int, ...]
     deepseek_api_key: str | None
     deepseek_model: str
     spotify_client_id: str | None
@@ -64,8 +49,6 @@ class AppConfig:
         music_minutes = _int_env(source, "MUSIC_WINDOW_MINUTES", 10)
         public_base = source.get("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
         return cls(
-            telegram_bot_token=source.get("TELEGRAM_BOT_TOKEN") or None,
-            telegram_allowed_user_ids=_csv_ints(source.get("TELEGRAM_ALLOWED_USER_IDS")),
             deepseek_api_key=source.get("DEEPSEEK_API_KEY") or None,
             deepseek_model=source.get("DEEPSEEK_MODEL", "deepseek-chat"),
             spotify_client_id=source.get("SPOTIFY_CLIENT_ID") or None,
@@ -88,12 +71,6 @@ class AppConfig:
             raise ConfigError("DEEPSEEK_API_KEY is required")
         return self.deepseek_api_key
 
-    def require_telegram(self) -> str:
-        if not self.telegram_bot_token:
-            raise ConfigError("TELEGRAM_BOT_TOKEN is required")
-        if not self.telegram_allowed_user_ids:
-            raise ConfigError("TELEGRAM_ALLOWED_USER_IDS must include at least one user id")
-        return self.telegram_bot_token
 
     def require_spotify(self) -> tuple[str, str, str]:
         missing = [

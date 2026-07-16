@@ -270,6 +270,50 @@ class SpotifyDesktopController:
             time.sleep(0.5)
         raise SpotifyDesktopError(f"Spotify could not play {target_path}")
 
+    def _resume_selected_song_radio(self, device_name: str, radio_title: str) -> bool:
+        state = self._evaluate(
+            f"""
+            (() => {{
+              const wantedTitle = {json.dumps(radio_title)};
+              const wantedDevice = {json.dumps(device_name)};
+              const titles = [
+                ...Array.from(document.querySelectorAll('main h1')),
+                ...Array.from(document.querySelectorAll('a[href*="/playlist/"]')),
+              ].map(element => (element.textContent || '').trim());
+              const control = document.querySelector('[data-testid="control-button-playpause"]');
+              const playing = (control?.getAttribute('aria-label') || '') === 'Pause';
+              const deviceActive = Array.from(document.querySelectorAll('button')).some(
+                button => {{
+                  const label = button.getAttribute('aria-label') || '';
+                  const text = (button.textContent || '').trim();
+                  return label.includes(`Playing on ${{wantedDevice}}`)
+                    || text.includes(`Playing on ${{wantedDevice}}`);
+                }}
+              );
+              return {{
+                selected: titles.includes(wantedTitle),
+                playing,
+                device_active: deviceActive,
+              }};
+            }})()
+            """
+        )
+        if not isinstance(state, dict) or not state.get("selected"):
+            return False
+        if state.get("playing") and state.get("device_active"):
+            return True
+        if not state.get("device_active"):
+            self.activate_device(device_name)
+        if not self.current_playback().is_playing:
+            self.resume()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if self.current_playback().is_playing:
+                return True
+            time.sleep(0.5)
+        raise SpotifyDesktopError(f"Spotify could not resume {radio_title}")
+
+
     def play_track_radio(
         self,
         device_name: str,
@@ -277,6 +321,9 @@ class SpotifyDesktopController:
         *,
         search_query: str | None = None,
     ) -> None:
+        radio_title = _song_radio_title(search_query)
+        if radio_title and self._resume_selected_song_radio(device_name, radio_title):
+            return
         self.play_track(device_name, spotify_uri, search_query=search_query)
         kind, item_id = _spotify_uri_parts(spotify_uri)
         if kind != "track":
@@ -519,6 +566,13 @@ def _spotify_target(cdp_url: str) -> dict[str, object]:
         if "xpui.app.spotify.com" in str(target.get("url", "")):
             return target
     raise SpotifyDesktopError("Spotify desktop debugger target is unavailable")
+
+
+def _song_radio_title(search_query: str | None) -> str | None:
+    if not search_query:
+        return None
+    track_name = search_query.split(" — ", 1)[0].strip()
+    return f"{track_name} Radio" if track_name else None
 
 
 def _spotify_uri_parts(uri: str) -> tuple[str, str]:
