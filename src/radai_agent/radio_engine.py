@@ -11,7 +11,7 @@ import time
 import urllib.parse
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Callable
 
 from .deepseek import DeepSeekClient, DeepSeekError, EpisodePlanningInput, parse_deepseek_plan
 from .audio import build_prepare_command
@@ -54,6 +54,8 @@ class RadioSettings:
     paused_track_name: str | None = None
     active_music_source_uri: str | None = None
     active_music_source_name: str | None = None
+    podcast_checkpoint_episode_id: str | None = None
+    podcast_checkpoint_position_sec: float = 0.0
 
 
 @dataclass
@@ -170,6 +172,9 @@ class RadioEngine:
         self._video_thread: threading.Thread | None = None
         self._preparing_history_id: str | None = None
         self._current_episode_id: str | None = None
+        self._persisted_podcast_checkpoint_sec = (
+            self.store.settings.podcast_checkpoint_position_sec
+        )
         self._restart_podcast = threading.Event()
         self._play_now_requested = threading.Event()
         self._backfill_episode_history()
@@ -204,6 +209,13 @@ class RadioEngine:
             self._playback_paused.clear()
         self._spotify_audio_enabled.clear()
         self._terminate(self._active_decoder)
+        checkpoint_id = self.store.settings.podcast_checkpoint_episode_id
+        if checkpoint_id:
+            self._checkpoint_podcast(
+                checkpoint_id,
+                self.store.settings.podcast_checkpoint_position_sec,
+                force=True,
+            )
         self._pause_spotify()
         self._terminate(self._spotifyd)
         if self._encoder and self._encoder.stdin:
@@ -264,12 +276,14 @@ class RadioEngine:
         with self._lock:
             if not self._current_episode_id or self._status.state not in {"running", "paused"}:
                 raise RadioError("No podcast is currently playing")
+            episode_id = self._current_episode_id
             self._pause_generation += 1
             self._playback_paused.clear()
             self._restart_podcast.set()
             self._status.state = "running"
             self._status.detail = "Restarting podcast"
         self._terminate(self._active_decoder)
+        self._checkpoint_podcast(episode_id, 0.0, force=True)
         self._pause_spotify()
         return self.status()
 
@@ -758,6 +772,14 @@ class RadioEngine:
             queued = self._prepared_by_id(settings.queued_video_id, "YouTube")
             if queued is not None:
                 return queued
+        checkpoint_id = settings.podcast_checkpoint_episode_id
+        if checkpoint_id and checkpoint_id not in played:
+            for channel, episode_ids in settings.prepared_episodes.items():
+                if checkpoint_id not in episode_ids:
+                    continue
+                checkpoint = self._prepared_by_id(checkpoint_id, channel)
+                if checkpoint is not None:
+                    return checkpoint
         for channel in self._channels_in_playback_order():
             for episode_id in settings.prepared_episodes.get(channel, []):
                 if episode_id in played:
@@ -951,6 +973,7 @@ class RadioEngine:
         processed: Path,
         plan: DeepSeekPlan,
     ) -> bool:
+        episode_id = downloaded.episode.id
         duration = self._duration(processed)
         boundaries = [0.0]
         if self.store.settings.music_placement == "ads":
@@ -965,18 +988,38 @@ class RadioEngine:
         boundaries = sorted(set(round(value, 3) for value in boundaries))
         with self._lock:
             self._status.podcast = downloaded.episode.title
+        settings = self.store.settings
+        if settings.podcast_checkpoint_episode_id == episode_id:
+            resume_position = min(
+                duration,
+                max(0.0, settings.podcast_checkpoint_position_sec),
+            )
+        else:
+            resume_position = 0.0
+            self._checkpoint_podcast(episode_id, resume_position, force=True)
         while not self._stop.is_set():
             for index, (start, end) in enumerate(zip(boundaries, boundaries[1:])):
+                if end <= resume_position + 0.001:
+                    continue
                 if self._stop.is_set() or self._play_now_requested.is_set():
                     return False
                 self._wait_while_paused()
-                self._play_podcast_segment(processed, start, end, downloaded.episode.title)
+                self._play_podcast_segment(
+                    processed,
+                    max(start, resume_position),
+                    end,
+                    downloaded.episode.title,
+                    episode_id,
+                )
+                if self._stop.is_set():
+                    return False
                 if self._play_now_requested.is_set():
                     self._play_now_requested.clear()
                     return False
                 if self._restart_podcast.is_set():
                     break
-                if index < len(boundaries) - 2 and not self._stop.is_set():
+                resume_position = end
+                if index < len(boundaries) - 2:
                     self._play_music_break()
                     if self._play_now_requested.is_set():
                         self._play_now_requested.clear()
@@ -985,11 +1028,19 @@ class RadioEngine:
                         break
             if self._restart_podcast.is_set():
                 self._restart_podcast.clear()
+                resume_position = 0.0
                 continue
             return not self._stop.is_set()
         return False
 
-    def _play_podcast_segment(self, path: Path, start: float, end: float, title: str) -> None:
+    def _play_podcast_segment(
+        self,
+        path: Path,
+        start: float,
+        end: float,
+        title: str,
+        episode_id: str,
+    ) -> None:
         with self._lock:
             self._status.mode = "podcast"
             self._status.now_playing = title
@@ -1019,9 +1070,22 @@ class RadioEngine:
         )
         self._active_decoder = decoder
         self._pcm_source_active.set()
+        position = start
+
+        def checkpoint(written_bytes: int) -> None:
+            nonlocal position
+            position = min(
+                end,
+                start
+                + written_bytes
+                / (self.sample_rate * self.channels * self.sample_width),
+            )
+            if not self._restart_podcast.is_set():
+                self._checkpoint_podcast(episode_id, position)
+
         try:
             assert decoder.stdout is not None
-            self._copy_pcm(decoder.stdout)
+            self._copy_pcm(decoder.stdout, checkpoint)
             if (
                 decoder.wait(timeout=30) != 0
                 and not self._stop.is_set()
@@ -1029,7 +1093,15 @@ class RadioEngine:
                 and not self._play_now_requested.is_set()
             ):
                 raise RadioError(f"podcast decoder failed for {path.name}")
+            if (
+                not self._stop.is_set()
+                and not self._restart_podcast.is_set()
+                and not self._play_now_requested.is_set()
+            ):
+                position = end
         finally:
+            if not self._restart_podcast.is_set():
+                self._checkpoint_podcast(episode_id, position, force=True)
             self._pcm_source_active.clear()
             self._active_decoder = None
 
@@ -1134,13 +1206,22 @@ class RadioEngine:
                 time.sleep(2)
         raise RadioError(f"Spotify device did not become available: {last_error}")
 
-    def _copy_pcm(self, source: BinaryIO) -> None:
+    def _copy_pcm(
+        self,
+        source: BinaryIO,
+        on_progress: Callable[[int], None] | None = None,
+    ) -> None:
         pending = b""
+        written_bytes = 0
         while not self._stop.is_set():
             chunk = source.read(16_384)
             if not chunk:
                 break
-            pending = self._write_complete_frames(pending + chunk)
+            complete = pending + chunk
+            pending = self._write_complete_frames(complete)
+            written_bytes += len(complete) - len(pending)
+            if on_progress is not None:
+                on_progress(written_bytes)
 
     def _write_complete_frames(self, chunk: bytes) -> bytes:
         frame_size = self.channels * self.sample_width
@@ -1203,6 +1284,29 @@ class RadioEngine:
                         return
             time.sleep(0.02)
 
+    def _checkpoint_podcast(
+        self,
+        episode_id: str,
+        position_sec: float,
+        *,
+        force: bool = False,
+    ) -> None:
+        position_sec = max(0.0, position_sec)
+        with self._lock:
+            settings = self.store.settings
+            changed_episode = settings.podcast_checkpoint_episode_id != episode_id
+            settings.podcast_checkpoint_episode_id = episode_id
+            settings.podcast_checkpoint_position_sec = position_sec
+            should_save = (
+                force
+                or changed_episode
+                or abs(position_sec - self._persisted_podcast_checkpoint_sec) >= 5.0
+            )
+        if should_save:
+            self.store.save()
+            self._persisted_podcast_checkpoint_sec = position_sec
+
+
     def _pause_spotify(self) -> None:
         try:
             self.spotify_desktop.pause()
@@ -1219,6 +1323,10 @@ class RadioEngine:
 
     def _mark_played(self, episode_id: str) -> None:
         settings = self.store.settings
+        if settings.podcast_checkpoint_episode_id == episode_id:
+            settings.podcast_checkpoint_episode_id = None
+            settings.podcast_checkpoint_position_sec = 0.0
+            self._persisted_podcast_checkpoint_sec = 0.0
         if episode_id not in settings.episode_history:
             self._remember_episode_id(episode_id)
         played = settings.played_episode_ids
@@ -1337,6 +1445,7 @@ class RadioEngine:
             for episode_id in (
                 settings.queued_video_id,
                 settings.pending_video_id,
+                settings.podcast_checkpoint_episode_id,
                 self._current_episode_id,
             )
             if episode_id
@@ -1356,10 +1465,13 @@ class RadioEngine:
     def _enforce_storage_retention(self) -> None:
         settings = self.store.settings
         limit = settings.unplayed_episodes_per_source
-        trimmed = {
-            channel: episode_ids[:limit]
-            for channel, episode_ids in settings.prepared_episodes.items()
-        }
+        checkpoint_id = settings.podcast_checkpoint_episode_id
+        trimmed: dict[str, list[str]] = {}
+        for channel, episode_ids in settings.prepared_episodes.items():
+            retained_ids = episode_ids[:limit]
+            if checkpoint_id in episode_ids and checkpoint_id not in retained_ids:
+                retained_ids.append(checkpoint_id)
+            trimmed[channel] = retained_ids
         if trimmed != settings.prepared_episodes:
             settings.prepared_episodes = trimmed
             self.store.save()

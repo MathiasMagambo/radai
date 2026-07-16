@@ -1,4 +1,5 @@
 from collections import deque
+from io import BytesIO
 import signal
 import threading
 from pathlib import Path
@@ -470,6 +471,95 @@ def test_llm_preparation_failure_is_exposed_in_radio_status() -> None:
     assert engine.status().preparation_error == (
         "Podcast preparation failed: LLM API error: DeepSeek API credits are exhausted"
     )
+
+
+def test_podcast_checkpoint_tracks_pcm_written_to_stream(monkeypatch) -> None:
+    settings = RadioSettings()
+    saved_positions: list[float] = []
+    engine = object.__new__(RadioEngine)
+    engine.sample_rate = 10
+    engine.channels = 2
+    engine.sample_width = 2
+    engine._lock = threading.RLock()
+    engine._stop = threading.Event()
+    engine._restart_podcast = threading.Event()
+    engine._play_now_requested = threading.Event()
+    engine._status = RadioStatus()
+    engine._pcm_source_active = threading.Event()
+    engine._active_decoder = None
+    engine._persisted_podcast_checkpoint_sec = 0.0
+    engine.store = SimpleNamespace(
+        settings=settings,
+        save=lambda: saved_positions.append(settings.podcast_checkpoint_position_sec),
+    )
+    engine._pause_spotify = lambda: None  # type: ignore[method-assign]
+    engine._write_pcm = lambda _chunk: None  # type: ignore[method-assign]
+    decoder = SimpleNamespace(
+        stdout=BytesIO(bytes(400)),
+        wait=lambda timeout: 0,
+    )
+    monkeypatch.setattr("radai_agent.radio_engine.subprocess.Popen", lambda *_args, **_kwargs: decoder)
+
+    engine._play_podcast_segment(
+        Path("episode.mp3"),
+        20.0,
+        30.0,
+        "Episode",
+        "episode-1",
+    )
+
+    assert settings.podcast_checkpoint_episode_id == "episode-1"
+    assert settings.podcast_checkpoint_position_sec == 30.0
+    assert saved_positions[-1] == 30.0
+
+
+def test_stream_restart_selects_checkpoint_episode_and_resumes_position(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    original = StateStore(state_path)
+    original.settings.channels = ["channel-a", "channel-b"]
+    original.settings.last_channel_url = "channel-a"
+    original.settings.prepared_episodes = {
+        "channel-a": ["episode-a"],
+        "channel-b": ["episode-b"],
+    }
+    original.settings.podcast_checkpoint_episode_id = "episode-a"
+    original.settings.podcast_checkpoint_position_sec = 37.5
+    original.save()
+    restored = StateStore(state_path)
+    episodes = {
+        episode_id: (
+            SimpleNamespace(
+                episode=SimpleNamespace(id=episode_id, title=episode_id),
+            ),
+            Path(f"{episode_id}.mp3"),
+            SimpleNamespace(ad_cuts=(), music_insertions=()),
+        )
+        for episode_ids in restored.settings.prepared_episodes.values()
+        for episode_id in episode_ids
+    }
+    engine = object.__new__(RadioEngine)
+    engine.store = restored
+    engine._lock = threading.RLock()
+    engine._status = RadioStatus()
+    engine._stop = threading.Event()
+    engine._play_now_requested = threading.Event()
+    engine._restart_podcast = threading.Event()
+    engine._prepared_by_id = lambda episode_id, _channel: episodes.get(episode_id)  # type: ignore[method-assign]
+    engine._duration = lambda _path: 100.0  # type: ignore[method-assign]
+    engine._wait_while_paused = lambda: None  # type: ignore[method-assign]
+    segments: list[tuple[float, float, str]] = []
+    engine._play_podcast_segment = (  # type: ignore[method-assign]
+        lambda _path, start, end, _title, episode_id: segments.append(
+            (start, end, episode_id)
+        )
+    )
+
+    selected = engine._choose_prepared_episode()
+    completed = engine._play_episode(*selected)
+
+    assert selected[0].episode.id == "episode-a"
+    assert completed
+    assert segments == [(37.5, 100.0, "episode-a")]
 
 
 def test_state_store_starts_without_personal_channels_and_persists_selection(tmp_path: Path) -> None:
