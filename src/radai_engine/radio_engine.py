@@ -165,6 +165,7 @@ class RadioEngine:
         self._playback_paused = threading.Event()
         self._pause_generation = 0
         self._source_paused = False
+        self._pending_music_source_change = False
         self._encoder: subprocess.Popen[bytes] | None = None
         self._spotifyd: subprocess.Popen[bytes] | None = None
         self._active_decoder: subprocess.Popen[bytes] | None = None
@@ -190,6 +191,8 @@ class RadioEngine:
                 return self.status()
             self._stop.clear()
             self._playback_paused.clear()
+            self._source_paused = False
+            self._pending_music_source_change = False
             self._status = RadioStatus(
                 state="starting",
                 detail="Starting a prepared podcast",
@@ -207,6 +210,8 @@ class RadioEngine:
         with self._lock:
             self._pause_generation += 1
             self._playback_paused.clear()
+            self._source_paused = False
+            self._pending_music_source_change = False
         self._spotify_audio_enabled.clear()
         self._terminate(self._active_decoder)
         checkpoint_id = self.store.settings.podcast_checkpoint_episode_id
@@ -250,16 +255,21 @@ class RadioEngine:
             self._pause_generation += 1
             self._playback_paused.clear()
             source_paused = self._source_paused
+            pending_music_source_change = self._pending_music_source_change
+            self._pending_music_source_change = False
             mode = self._status.mode
             decoder = self._active_decoder
         if source_paused:
             self._pcm_source_active.set()
             if decoder is not None and decoder.poll() is None:
                 decoder.send_signal(signal.SIGCONT)
-            elif mode == "music":
-                self.spotify_desktop.resume()
             with self._lock:
                 self._source_paused = False
+        if mode == "music":
+            if pending_music_source_change:
+                self._activate_music_source()
+            else:
+                self._resume_music_source()
         with self._lock:
             if self._thread and self._thread.is_alive():
                 self._status.state = "running"
@@ -279,6 +289,8 @@ class RadioEngine:
             episode_id = self._current_episode_id
             self._pause_generation += 1
             self._playback_paused.clear()
+            self._source_paused = False
+            self._pending_music_source_change = False
             self._restart_podcast.set()
             self._status.state = "running"
             self._status.detail = "Restarting podcast"
@@ -366,17 +378,11 @@ class RadioEngine:
         settings.seed_track_name = None
         self.store.save()
         with self._lock:
-            switch_now = self._status.mode == "music" and self._status.state in {"running", "paused"}
+            switch_now = self._status.mode == "music" and self._status.state == "running"
+            if self._status.mode == "music" and self._status.state == "paused":
+                self._pending_music_source_change = True
         if switch_now:
-            playlists = self.spotify_desktop.playlists()
-            playlist = next((item for item in playlists if item.uri == uri), None)
-            playlist = playlist or (random.choice(playlists) if playlists else None)
-            if playlist is None:
-                raise RadioError("Spotify account has no saved playlists")
-            self.spotify_desktop.play_context(self.spotify_device_name, playlist.uri, shuffle=True)
-            settings.active_music_source_uri = playlist.uri
-            settings.active_music_source_name = playlist.name
-            self.store.save()
+            self._activate_music_source()
 
     def set_radio_track(self, uri: str, name: str) -> None:
         settings = self.store.settings
@@ -384,16 +390,47 @@ class RadioEngine:
         settings.seed_track_name = name
         self.store.save()
         with self._lock:
-            switch_now = self._status.mode == "music" and self._status.state in {"running", "paused"}
+            switch_now = self._status.mode == "music" and self._status.state == "running"
+            if self._status.mode == "music" and self._status.state == "paused":
+                self._pending_music_source_change = True
         if switch_now:
+            self._activate_music_source()
+
+    def _resume_music_source(self) -> None:
+        self.spotify_desktop.activate_device(self.spotify_device_name)
+        self.spotify_desktop.resume()
+
+
+    def _activate_music_source(self) -> str:
+        settings = self.store.settings
+        if settings.seed_track_uri:
             self.spotify_desktop.play_track_radio(
                 self.spotify_device_name,
-                uri,
-                search_query=name,
+                settings.seed_track_uri,
+                search_query=settings.seed_track_name,
             )
-            settings.active_music_source_uri = uri
-            settings.active_music_source_name = name
-            self.store.save()
+            source_uri = settings.seed_track_uri
+            source_name = settings.seed_track_name or "Spotify radio"
+        else:
+            playlists = self.spotify_desktop.playlists()
+            if not playlists:
+                raise RadioError("Spotify account has no saved playlists")
+            playlist = next(
+                (item for item in playlists if item.uri == settings.selected_playlist_uri),
+                None,
+            )
+            playlist = playlist or random.choice(playlists)
+            self.spotify_desktop.play_context(
+                self.spotify_device_name,
+                playlist.uri,
+                shuffle=True,
+            )
+            source_uri = playlist.uri
+            source_name = playlist.name
+        settings.active_music_source_uri = source_uri
+        settings.active_music_source_name = source_name
+        self.store.save()
+        return source_name
 
 
     def _run(self) -> None:
@@ -412,6 +449,16 @@ class RadioEngine:
                     self._play_now_requested.clear()
                     prepared = self._choose_prepared_episode()
                     continue
+                self._wait_while_paused()
+                if self._stop.is_set():
+                    break
+                if self._play_now_requested.is_set():
+                    self._play_now_requested.clear()
+                    prepared = self._choose_prepared_episode()
+                    continue
+                if self._restart_podcast.is_set():
+                    self._restart_podcast.clear()
+                    continue
                 self._mark_played(downloaded.episode.id)
                 with self._lock:
                     self._current_episode_id = None
@@ -427,6 +474,8 @@ class RadioEngine:
         finally:
             with self._lock:
                 self._current_episode_id = None
+                self._source_paused = False
+                self._pending_music_source_change = False
             self._spotify_audio_enabled.clear()
             self._pause_spotify()
             self._terminate(self._active_decoder)
@@ -752,6 +801,8 @@ class RadioEngine:
             active = bool(self._thread and self._thread.is_alive())
             self._pause_generation += 1
             self._playback_paused.clear()
+            self._source_paused = False
+            self._pending_music_source_change = False
             if active:
                 self._play_now_requested.set()
                 self._status.state = "running"
@@ -1112,26 +1163,7 @@ class RadioEngine:
         songs_per_break = settings.songs_per_break
         self._spotify_audio_ready.clear()
         self._spotify_audio_enabled.set()
-        if settings.seed_track_uri:
-            self.spotify_desktop.play_track_radio(
-                self.spotify_device_name,
-                settings.seed_track_uri,
-                search_query=settings.seed_track_name,
-            )
-            source_uri = settings.seed_track_uri
-            source_name = settings.seed_track_name or "Spotify radio"
-        else:
-            playlists = self.spotify_desktop.playlists()
-            if not playlists:
-                raise RadioError("Spotify account has no saved playlists")
-            playlist = next((item for item in playlists if item.uri == settings.selected_playlist_uri), None)
-            playlist = playlist or random.choice(playlists)
-            self.spotify_desktop.play_context(self.spotify_device_name, playlist.uri, shuffle=True)
-            source_uri = playlist.uri
-            source_name = playlist.name
-        settings.active_music_source_uri = source_uri
-        settings.active_music_source_name = source_name
-        self.store.save()
+        source_name = self._activate_music_source()
         if not self._spotify_audio_ready.wait(timeout=15):
             raise RadioError("Spotify started without producing audio")
         with self._lock:
@@ -1140,6 +1172,7 @@ class RadioEngine:
             self._status.now_playing = source_name
         completed_songs = 0
         current_track_key: tuple[str, tuple[str, ...]] | None = None
+        not_playing_since: float | None = None
         last_poll = 0.0
         deadline = time.monotonic() + 30 * 60
         spotifyd = self._spotifyd
@@ -1167,6 +1200,7 @@ class RadioEngine:
                 except Exception:
                     continue
                 if playback.track and playback.is_playing:
+                    not_playing_since = None
                     track_key = (
                         playback.track.name.strip().casefold(),
                         tuple(artist.strip().casefold() for artist in playback.track.artists),
@@ -1180,6 +1214,15 @@ class RadioEngine:
                             if completed_songs >= songs_per_break:
                                 break
                         current_track_key = track_key
+                elif playback.track:
+                    if not_playing_since is None:
+                        not_playing_since = now
+                    elif now - not_playing_since >= 2.0:
+                        try:
+                            self._resume_music_source()
+                        except Exception:
+                            pass
+                        not_playing_since = now
             if (
                 completed_songs < songs_per_break
                 and not self._stop.is_set()

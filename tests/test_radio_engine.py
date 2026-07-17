@@ -95,6 +95,7 @@ def test_resume_continues_decoder_and_reactivates_pcm_source() -> None:
     engine._playback_paused = threading.Event()
     engine._playback_paused.set()
     engine._source_paused = True
+    engine._pending_music_source_change = False
     engine._status = RadioStatus(state="paused", mode="podcast")
     engine._active_decoder = decoder
     engine._pcm_source_active = threading.Event()
@@ -108,6 +109,66 @@ def test_resume_continues_decoder_and_reactivates_pcm_source() -> None:
     assert not engine.source_paused()
     assert not engine._playback_paused.is_set()
     assert status.state == "running"
+
+
+def test_start_clears_stale_source_pause_before_reopening_stream() -> None:
+    engine = object.__new__(RadioEngine)
+    engine._lock = threading.RLock()
+    engine._thread = None
+    engine._stop = threading.Event()
+    engine._playback_paused = threading.Event()
+    engine._playback_paused.set()
+    engine._source_paused = True
+    engine._pending_music_source_change = True
+    engine._status = RadioStatus()
+    engine._run = lambda: None  # type: ignore[method-assign]
+
+    engine.start()
+    engine._thread.join(timeout=1)
+
+    assert not engine.source_paused()
+    assert not engine._playback_paused.is_set()
+    assert not engine._pending_music_source_change
+
+
+def test_paused_playlist_change_activates_when_playback_resumes() -> None:
+    activated: list[bool] = []
+    settings = RadioSettings(songs_per_break=3)
+    engine = object.__new__(RadioEngine)
+    engine._lock = threading.RLock()
+    engine._pause_generation = 1
+    engine._playback_paused = threading.Event()
+    engine._playback_paused.set()
+    engine._source_paused = True
+    engine._pending_music_source_change = False
+    engine._status = RadioStatus(state="paused", mode="music")
+    engine._active_decoder = None
+    engine._pcm_source_active = threading.Event()
+    engine._thread = threading.current_thread()
+    engine.store = SimpleNamespace(settings=settings, save=lambda: None)
+    engine._activate_music_source = lambda: activated.append(True) or "New playlist"  # type: ignore[method-assign]
+
+    engine.set_playlist("spotify:playlist:new", "New playlist")
+
+    assert activated == []
+    engine.resume()
+    assert activated == [True]
+    assert settings.selected_playlist_uri == "spotify:playlist:new"
+
+
+def test_stream_notifies_when_last_listener_stays_disconnected() -> None:
+    idle = threading.Event()
+    stream = object.__new__(BufferedAudioStream)
+    stream._condition = threading.Condition()
+    stream._listeners = 0
+    stream._idle_generation = 0
+    stream._idle_timeout = 0
+    stream._on_idle = idle.set
+
+    stream._listener_started()
+    stream._listener_stopped()
+
+    assert idle.wait(timeout=1)
 
 
 def test_spotify_drain_resets_pcm_phase_at_track_boundary(monkeypatch, tmp_path: Path) -> None:
@@ -241,6 +302,80 @@ def test_music_break_honors_song_count_when_tracks_share_album_id(monkeypatch) -
 
     assert len(playback_checks) == 4
     assert paused == [True]
+
+
+def test_music_break_recovers_paused_spotify_playback(monkeypatch) -> None:
+    engine = object.__new__(RadioEngine)
+    engine._stop = threading.Event()
+    engine._restart_podcast = threading.Event()
+    engine._play_now_requested = threading.Event()
+    engine._spotify_audio_enabled = threading.Event()
+    engine._spotify_audio_ready = threading.Event()
+    engine._pcm_source_active = threading.Event()
+    engine._playback_paused = threading.Event()
+    engine._lock = threading.RLock()
+    engine._status = RadioStatus()
+    engine._spotifyd = SimpleNamespace(poll=lambda: None)
+    engine.spotify_device_name = "Radai Radio"
+    engine.store = SimpleNamespace(
+        settings=SimpleNamespace(
+            songs_per_break=1,
+            seed_track_uri="spotify:track:test",
+            seed_track_name="Test track",
+            active_music_source_uri=None,
+            active_music_source_name=None,
+        ),
+        save=lambda: None,
+    )
+    tracks = iter(
+        (
+            SimpleNamespace(
+                is_playing=False,
+                track=SimpleNamespace(name="First", artists=("Artist",)),
+            ),
+            SimpleNamespace(
+                is_playing=False,
+                track=SimpleNamespace(name="First", artists=("Artist",)),
+            ),
+            SimpleNamespace(
+                is_playing=False,
+                track=SimpleNamespace(name="First", artists=("Artist",)),
+            ),
+            SimpleNamespace(
+                is_playing=True,
+                track=SimpleNamespace(name="First", artists=("Artist",)),
+            ),
+            SimpleNamespace(
+                is_playing=True,
+                track=SimpleNamespace(name="Second", artists=("Artist",)),
+            ),
+        )
+    )
+    activated: list[str] = []
+    resumed: list[bool] = []
+
+    def play_track_radio(*_args, **_kwargs) -> None:
+        engine._spotify_audio_ready.set()
+
+    engine.spotify_desktop = SimpleNamespace(
+        play_track_radio=play_track_radio,
+        current_playback=lambda: next(tracks),
+        activate_device=activated.append,
+        resume=lambda: resumed.append(True),
+    )
+    engine._wait_for_device = lambda: None  # type: ignore[method-assign]
+    engine._pause_spotify = lambda: None  # type: ignore[method-assign]
+    clock = [0.0]
+    monkeypatch.setattr("radai_engine.radio_engine.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        "radai_engine.radio_engine.time.sleep",
+        lambda _seconds: clock.__setitem__(0, clock[0] + 1.1),
+    )
+
+    engine._play_music_break()
+
+    assert activated == ["Radai Radio"]
+    assert resumed == [True]
 
 
 def test_song_radio_opens_track_menu_and_starts_generated_playlist(monkeypatch) -> None:
@@ -456,6 +591,11 @@ def test_queued_episode_is_consumed_when_playback_starts() -> None:
     engine._active_decoder = None
     engine._spotifyd = None
     engine._encoder = None
+    engine._playback_paused = threading.Event()
+    engine._play_now_requested = threading.Event()
+    engine._restart_podcast = threading.Event()
+    engine._source_paused = False
+    engine._pending_music_source_change = False
     episode = SimpleNamespace(episode=SimpleNamespace(id="prepared-episode"))
     events: list[str] = []
 
@@ -468,6 +608,7 @@ def test_queued_episode_is_consumed_when_playback_starts() -> None:
     engine._choose_prepared_episode = choose_episode  # type: ignore[method-assign]
     engine._start_pipeline = lambda: events.append("stream")  # type: ignore[method-assign]
     engine._play_episode = lambda *_args: events.append("play") or True  # type: ignore[method-assign]
+    engine._wait_while_paused = lambda: events.append("wait")  # type: ignore[method-assign]
     engine._consume_queued_episode = lambda _id: events.append("consume")  # type: ignore[method-assign]
     engine._mark_played = lambda _id: events.append("mark")  # type: ignore[method-assign]
     engine.prepare_in_background = lambda: events.append("prepare")  # type: ignore[method-assign]
@@ -476,7 +617,7 @@ def test_queued_episode_is_consumed_when_playback_starts() -> None:
 
     engine._run()
 
-    assert events == ["choose", "stream", "consume", "play", "mark", "prepare", "choose"]
+    assert events == ["choose", "stream", "consume", "play", "wait", "mark", "prepare", "choose"]
 
 
 def test_restart_podcast_is_disabled_by_default() -> None:

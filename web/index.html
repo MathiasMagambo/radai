@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/style.css?v=9">
+  <link rel="stylesheet" href="/style.css?v=11">
 </head>
 <body>
   <main>
@@ -88,11 +88,17 @@
         <label for="playlist">Saved playlist</label>
         <div class="playlist-picker">
           <input id="playlist" type="search" list="playlistOptions" placeholder="Random saved playlist" autocomplete="off" aria-describedby="playlistHint">
+          <button id="playlistClear" class="playlist-clear" type="button" aria-label="Clear playlist search" hidden>
+            <span aria-hidden="true">×</span>
+          </button>
           <datalist id="playlistOptions"></datalist>
         </div>
         <div id="activePlaylist" class="active-source">
-          <span class="label">CURRENT MUSIC SOURCE</span>
+          <span id="activePlaylistLabel" class="label">CURRENT MUSIC SOURCE</span>
           <strong id="activePlaylistName">Random saved playlist</strong>
+          <button id="activePlaylistClear" class="active-source-clear" type="button" aria-label="Switch to random saved playlists" hidden>
+            <span aria-hidden="true">×</span>
+          </button>
           <div id="playlistConfirm" class="source-confirm" hidden>
             <span id="playlistConfirmText"></span>
             <button id="playlistApply" type="button">SWITCH SOURCE</button>
@@ -237,6 +243,6 @@
       <span id="message" role="status"></span>
     </footer>
   </main>
-  <script src="/app.js?v=9" defer></script>
+  <script src="/app.js?v=12" defer></script>
 </body>
 </html>

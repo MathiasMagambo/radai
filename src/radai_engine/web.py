@@ -65,6 +65,8 @@ class BufferedAudioStream:
         source_paused: Callable[[], bool] = lambda: False,
         *,
         lag_bytes: int = 240_000,
+        on_idle: Callable[[], None] = lambda: None,
+        idle_timeout: float = 2.0,
     ) -> None:
         self.upstream_url = upstream_url
         self.status_source = status_source
@@ -76,6 +78,10 @@ class BufferedAudioStream:
         self._base = 0
         self._generation = 0
         self._status_history: deque[tuple[int, RadioStatus]] = deque()
+        self._on_idle = on_idle
+        self._idle_timeout = idle_timeout
+        self._listeners = 0
+        self._idle_generation = 0
         threading.Thread(target=self._run, name="radai-stream-buffer", daemon=True).start()
     @property
     def delay_seconds(self) -> float:
@@ -173,15 +179,42 @@ class BufferedAudioStream:
             preparation_error=current.preparation_error,
         )
 
+    def _listener_started(self) -> None:
+        with self._condition:
+            self._listeners += 1
+            self._idle_generation += 1
+
+    def _listener_stopped(self) -> None:
+        with self._condition:
+            self._listeners = max(0, self._listeners - 1)
+            if self._listeners:
+                return
+            self._idle_generation += 1
+            generation = self._idle_generation
+        threading.Thread(
+            target=self._notify_idle_after_delay,
+            args=(generation,),
+            name="radai-stream-idle",
+            daemon=True,
+        ).start()
+
+    def _notify_idle_after_delay(self, generation: int) -> None:
+        time.sleep(self._idle_timeout)
+        with self._condition:
+            if self._listeners or generation != self._idle_generation:
+                return
+        self._on_idle()
+
     def serve(self, handler: BaseHTTPRequestHandler) -> None:
-        handler.send_response(HTTPStatus.OK)
-        handler.send_header("Content-Type", "audio/mpeg")
-        handler.send_header("Cache-Control", "no-store")
-        handler.send_header("X-Accel-Buffering", "no")
-        handler.end_headers()
-        cursor: int | None = None
-        generation = -1
+        self._listener_started()
         try:
+            handler.send_response(HTTPStatus.OK)
+            handler.send_header("Content-Type", "audio/mpeg")
+            handler.send_header("Cache-Control", "no-store")
+            handler.send_header("X-Accel-Buffering", "no")
+            handler.end_headers()
+            cursor: int | None = None
+            generation = -1
             while True:
                 with self._condition:
                     while len(self._data) < self.lag_bytes:
@@ -207,6 +240,8 @@ class BufferedAudioStream:
                 handler.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
             return
+        finally:
+            self._listener_stopped()
 
     def _aligned_cursor_locked(self, absolute_offset: int) -> int:
         relative_offset = max(0, absolute_offset - self._base)
@@ -280,6 +315,7 @@ class RadioApplication:
             f"http://127.0.0.1:{icecast_port}/spotify.mp3",
             self.engine.status,
             self.engine.source_paused,
+            on_idle=lambda: self.engine.pause(delay_sec=0),
         )
     def settings_payload(self) -> dict[str, object]:
         settings = self.store.settings

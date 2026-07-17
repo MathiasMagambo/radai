@@ -17,6 +17,9 @@ const streamStatus = $('#streamStatus');
 const playlistInput = $('#playlist');
 const playlistOptions = $('#playlistOptions');
 const activePlaylistName = $('#activePlaylistName');
+const activePlaylistLabel = $('#activePlaylistLabel');
+const activePlaylistClear = $('#activePlaylistClear');
+const playlistClear = $('#playlistClear');
 const playlistConfirm = $('#playlistConfirm');
 const playlistConfirmText = $('#playlistConfirmText');
 const settingsButton = $('#settingsButton');
@@ -82,14 +85,14 @@ function isActive(status = lastStatus) {
 }
 
 function updateStreamControl(status) {
-  const playing = !player.paused;
-  streamPlay.textContent = playing ? 'PAUSE' : 'PLAY';
-  streamPlay.setAttribute('aria-label', `${playing ? 'Pause' : 'Play'} radio stream`);
-  streamPlay.setAttribute('aria-pressed', String(playing));
-  streamPlay.classList.toggle('playing', playing);
+  const playingOrConnecting = streamWanted;
+  streamPlay.textContent = playingOrConnecting ? 'PAUSE' : 'PLAY';
+  streamPlay.setAttribute('aria-label', `${playingOrConnecting ? 'Pause' : 'Play'} radio stream`);
+  streamPlay.setAttribute('aria-pressed', String(playingOrConnecting));
+  streamPlay.classList.toggle('playing', playingOrConnecting);
   streamMute.textContent = player.muted || player.volume === 0 ? 'MUTE' : 'VOL';
   streamMute.setAttribute('aria-pressed', String(player.muted));
-  streamStatus.textContent = status || (playing ? 'LIVE' : 'READY');
+  streamStatus.textContent = status || (!player.paused ? 'LIVE' : (streamWanted ? 'CONNECTING' : 'READY'));
 }
 
 function cancelStreamReconnect() {
@@ -105,21 +108,36 @@ function scheduleStreamReconnect(delay = 2500) {
   }, delay);
 }
 
+function requestPlayerPlayback({ reload = false } = {}) {
+  if (reload) {
+    streamConnected = false;
+    player.load();
+  }
+  scheduleStreamReconnect(5000);
+  return player.play();
+}
+
 async function reconnectStream() {
   if (!streamWanted || streamReconnecting) return;
   streamReconnecting = true;
   updateStreamControl('CONNECTING');
   try {
     const data = await api('/api/status');
-    renderStatus(data.status);
-    if (!isActive(data.status)) {
+    let status = data.status;
+    if (!isActive(status)) {
       updateStreamControl('BUFFERING');
       scheduleStreamReconnect(3000);
       return;
     }
-    streamConnected = false;
-    player.load();
-    await player.play();
+    if (status.state === 'paused' && radioSettings.playback_mode === 'resumable') {
+      const resumed = await api('/api/resume', { method: 'POST', body: '{}' });
+      status = resumed.status;
+    }
+    renderStatus(status);
+    requestPlayerPlayback({ reload: true }).catch(() => {
+      updateStreamControl('BUFFERING');
+      scheduleStreamReconnect(3000);
+    });
   } catch (_error) {
     updateStreamControl('BUFFERING');
     scheduleStreamReconnect(3000);
@@ -131,11 +149,12 @@ async function reconnectStream() {
 async function pausePlayback() {
   streamWanted = false;
   cancelStreamReconnect();
+  player.pause();
+  updateStreamControl('PAUSED');
   if (radioSettings.playback_mode === 'resumable' && isActive()) {
     const data = await api('/api/pause', { method: 'POST', body: '{}' });
     renderStatus(data.status);
   }
-  player.pause();
 }
 
 async function playPlayback() {
@@ -152,16 +171,16 @@ async function playPlayback() {
     status = resumed.status;
   }
   renderStatus(status);
-  if (radioSettings.playback_mode === 'radio' || !streamConnected) player.load();
-  await player.play();
+  const reload = radioSettings.playback_mode === 'radio' || !streamConnected;
+  await requestPlayerPlayback({ reload });
 }
 
 streamPlay.addEventListener('click', async () => {
   try {
-    if (!player.paused) await pausePlayback();
+    if (streamWanted) await pausePlayback();
     else await playPlayback();
   } catch (error) {
-    updateStreamControl('UNAVAILABLE');
+    updateStreamControl(streamWanted ? 'UNAVAILABLE' : 'PAUSED');
     notify(error.message, true);
   }
 });
@@ -244,9 +263,7 @@ startButton.addEventListener('click', async () => {
     const data = await api('/api/start', { method: 'POST', body: '{}' });
     renderStatus(data.status);
     streamWanted = true;
-    streamConnected = false;
-    player.load();
-    await player.play().catch(() => {});
+    await requestPlayerPlayback({ reload: true });
     notify('RADIO STARTED');
   } catch (error) { notify(error.message, true); }
 });
@@ -288,11 +305,18 @@ function renderSettings(settings) {
     $('#playedEpisodesPerSource').value = radioSettings.played_episodes_per_source;
   }
   const selectedName = radioSettings.selected_playlist_name || '';
-  playlistInput.value = selectedName;
-  activePlaylistName.textContent = radioSettings.seed_track_name
-    || selectedName
-    || radioSettings.active_music_source_name
-    || 'Random saved playlist';
+  syncPlaylistClearButton();
+  const configuredSourceName = radioSettings.seed_track_name || selectedName;
+  const configuredSourceUri = radioSettings.seed_track_uri || radioSettings.selected_playlist_uri;
+  const activeSourceName = radioSettings.active_music_source_name || '';
+  const usesRandomSource = !configuredSourceUri;
+  const sourceIsPending = configuredSourceName
+    && configuredSourceUri !== radioSettings.active_music_source_uri;
+  activePlaylistLabel.textContent = sourceIsPending ? 'SELECTED MUSIC SOURCE' : 'CURRENT MUSIC SOURCE';
+  activePlaylistName.textContent = usesRandomSource
+    ? 'Random saved playlist'
+    : (sourceIsPending ? configuredSourceName : (activeSourceName || configuredSourceName));
+  syncActiveSourceClearButton();
   $('#queuedVideo').textContent = radioSettings.queued_video_title
     ? `PLAY NEXT: ${radioSettings.queued_video_title}`
     : '';
@@ -484,15 +508,31 @@ async function loadPlaylists() {
   } catch (error) { notify(error.message, true); }
 }
 
+function syncPlaylistClearButton() {
+  playlistClear.hidden = !playlistInput.value;
+  playlistClear.setAttribute('aria-label', 'Clear playlist search');
+}
+
+function syncActiveSourceClearButton() {
+  const hasConfiguredSource = Boolean(
+    radioSettings.seed_track_uri || radioSettings.selected_playlist_uri
+  );
+  activePlaylistClear.hidden = !hasConfiguredSource || !playlistConfirm.hidden;
+}
+
 function hidePlaylistConfirmation() {
   proposedPlaylist = null;
   playlistConfirm.hidden = true;
+  syncActiveSourceClearButton();
 }
 
 function proposePlaylistChange() {
   const value = playlistInput.value.trim();
   const match = playlistCatalog.find((item) => item.name.toLowerCase() === value.toLowerCase());
-  if (value && !match) return;
+  if (value && !match) {
+    hidePlaylistConfirmation();
+    return;
+  }
   const proposal = match || { uri: '', name: '' };
   if ((radioSettings.selected_playlist_uri || '') === proposal.uri) {
     hidePlaylistConfirmation();
@@ -501,29 +541,67 @@ function proposePlaylistChange() {
   proposedPlaylist = proposal;
   playlistConfirmText.textContent = `Switch to ${proposal.name || 'a random saved playlist'}?`;
   playlistConfirm.hidden = false;
+  syncActiveSourceClearButton();
 }
 
+playlistInput.addEventListener('input', () => {
+  syncPlaylistClearButton();
+  proposePlaylistChange();
+});
 playlistInput.addEventListener('change', proposePlaylistChange);
 playlistInput.addEventListener('dblclick', () => {
   playlistInput.select();
   if (typeof playlistInput.showPicker === 'function') playlistInput.showPicker();
 });
+playlistClear.addEventListener('click', () => {
+  playlistInput.value = '';
+  hidePlaylistConfirmation();
+  syncPlaylistClearButton();
+  playlistInput.focus();
+});
 $('#playlistCancel').addEventListener('click', () => {
-  playlistInput.value = radioSettings.selected_playlist_name || '';
+  playlistInput.value = '';
+  syncPlaylistClearButton();
   hidePlaylistConfirmation();
 });
 $('#playlistApply').addEventListener('click', async () => {
   if (!proposedPlaylist) return;
+  const button = $('#playlistApply');
   const selection = proposedPlaylist;
+  button.disabled = true;
   try {
     const data = await api('/api/playlist', {
       method: 'POST',
       body: JSON.stringify({ uri: selection.uri, name: selection.name }),
     });
-    renderSettings(data.settings);
+    playlistInput.value = '';
     hidePlaylistConfirmation();
+    renderSettings(data.settings);
+    if (selection.name && !streamWanted) await playPlayback();
     notify(selection.name ? `PLAYLIST: ${selection.name}` : 'PLAYLIST: RANDOM');
-  } catch (error) { notify(error.message, true); }
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+activePlaylistClear.addEventListener('click', async () => {
+  activePlaylistClear.disabled = true;
+  try {
+    const data = await api('/api/playlist', {
+      method: 'POST',
+      body: JSON.stringify({ uri: '', name: '' }),
+    });
+    playlistInput.value = '';
+    hidePlaylistConfirmation();
+    renderSettings(data.settings);
+    notify('PLAYLIST: RANDOM');
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    activePlaylistClear.disabled = false;
+  }
 });
 
 $('#searchForm').addEventListener('submit', async (event) => {
