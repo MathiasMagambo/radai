@@ -243,6 +243,7 @@ def test_music_break_accepts_spotify_pcm_before_starting_playback() -> None:
 
     engine._play_music_break()
 
+    assert engine._status.state == "running"
     assert engine._status.mode == "music"
 
 def test_music_break_honors_song_count_when_tracks_share_album_id(monkeypatch) -> None:
@@ -671,6 +672,33 @@ def test_llm_preparation_failure_is_exposed_in_radio_status() -> None:
         "Podcast preparation failed: LLM API error: DeepSeek API credits are exhausted"
     )
 
+def test_podcast_segment_does_not_start_after_play_now_request(monkeypatch) -> None:
+    launched: list[bool] = []
+    engine = object.__new__(RadioEngine)
+    engine._lock = threading.RLock()
+    engine._stop = threading.Event()
+    engine._play_now_requested = threading.Event()
+    engine._play_now_requested.set()
+    engine._status = RadioStatus(state="starting", mode="preparing")
+    engine._pause_spotify = lambda: None  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "radai_engine.radio_engine.subprocess.Popen",
+        lambda *_args, **_kwargs: launched.append(True),
+    )
+
+    engine._play_podcast_segment(
+        Path("episode.mp3"),
+        0.0,
+        30.0,
+        "Old episode",
+        "episode-old",
+    )
+
+    assert launched == []
+    assert engine.status().state == "starting"
+    assert engine.status().mode == "preparing"
+
+
 
 def test_podcast_checkpoint_tracks_pcm_written_to_stream(monkeypatch) -> None:
     settings = RadioSettings()
@@ -707,6 +735,8 @@ def test_podcast_checkpoint_tracks_pcm_written_to_stream(monkeypatch) -> None:
         "episode-1",
     )
 
+    assert engine._status.state == "running"
+    assert engine._status.mode == "podcast"
     assert settings.podcast_checkpoint_episode_id == "episode-1"
     assert settings.podcast_checkpoint_position_sec == 30.0
     assert saved_positions[-1] == 30.0
@@ -940,13 +970,13 @@ def test_podcast_chooser_can_interrupt_with_play_now() -> None:
     engine._current_episode_id = None
     engine.store = SimpleNamespace(settings=settings, save=lambda: None)
     engine._prepared_by_id = lambda *_args: prepared  # type: ignore[method-assign]
-    engine._request_play_now = lambda: requested.append("play-now")  # type: ignore[method-assign]
+    engine._request_play_now = lambda title: requested.append(title)  # type: ignore[method-assign]
 
     selected = engine.queue_prepared_episode("episode-a", "play_now")
 
     assert selected["title"] == "Episode A"
     assert settings.queued_video_id == "episode-a"
-    assert requested == ["play-now"]
+    assert requested == ["Episode A"]
 
 
 def test_history_replays_prepared_episode_without_removing_history() -> None:
@@ -975,7 +1005,7 @@ def test_history_replays_prepared_episode_without_removing_history() -> None:
         if episode_id == "prepared"
         else None
     )
-    engine._request_play_now = lambda: requested.append("play-now")  # type: ignore[method-assign]
+    engine._request_play_now = lambda title: requested.append(title)  # type: ignore[method-assign]
 
     history = engine.podcast_history()
     replayed = engine.replay_history_episode("prepared")
@@ -987,7 +1017,32 @@ def test_history_replays_prepared_episode_without_removing_history() -> None:
     assert replayed["title"] == "Prepared episode"
     assert settings.played_episode_ids == ["missing", "prepared"]
     assert settings.queued_video_id == "prepared"
-    assert requested == ["play-now"]
+    assert requested == ["Prepared episode"]
+
+
+def test_play_now_reports_preparation_before_stopping_current_decoder() -> None:
+    observed: list[RadioStatus] = []
+    engine = object.__new__(RadioEngine)
+    engine._lock = threading.RLock()
+    engine._thread = threading.current_thread()
+    engine._pause_generation = 0
+    engine._playback_paused = threading.Event()
+    engine._source_paused = False
+    engine._pending_music_source_change = False
+    engine._play_now_requested = threading.Event()
+    engine._status = RadioStatus(state="running", mode="podcast", now_playing="Current")
+    engine._active_decoder = object()
+    engine._terminate = lambda _process: observed.append(engine.status())  # type: ignore[method-assign]
+    engine._pause_spotify = lambda: None  # type: ignore[method-assign]
+
+    engine._request_play_now("Replay episode")
+
+    assert len(observed) == 1
+    assert observed[0].state == "starting"
+    assert observed[0].mode == "preparing"
+    assert observed[0].detail == "Preparing Replay episode"
+    assert observed[0].now_playing == ""
+    assert observed[0].podcast == "Replay episode"
 
 
 def test_storage_retention_keeps_configured_unplayed_and_played_counts(tmp_path: Path) -> None:

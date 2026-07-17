@@ -705,9 +705,22 @@ function renderPodcastHistory() {
     button.disabled = item.preparing;
     button.classList.toggle('primary', item.prepared);
     button.addEventListener('click', async () => {
+      const previousStatus = lastStatus;
       button.disabled = true;
+      button.setAttribute('aria-busy', 'true');
       try {
         if (item.prepared) {
+          button.textContent = 'PREPARING…';
+          renderStatus({
+            ...lastStatus,
+            state: 'starting',
+            detail: `Preparing ${item.title}`,
+            mode: 'preparing',
+            now_playing: '',
+            podcast: item.title,
+            error: null,
+          });
+          notify(`PREPARING: ${item.title}`);
           const data = await api('/api/history', {
             method: 'POST',
             body: JSON.stringify({ id: item.id, action: 'play_again' }),
@@ -715,7 +728,7 @@ function renderPodcastHistory() {
           renderSettings(data.settings);
           renderStatus(data.status);
           if (player.paused) await playPlayback();
-          notify(`PLAYING AGAIN: ${item.title}`);
+          notify(`SWITCHING PODCAST: ${item.title}`);
         } else {
           await api('/api/history', {
             method: 'POST',
@@ -727,10 +740,13 @@ function renderPodcastHistory() {
         }
       } catch (error) {
         item.preparing = false;
+        if (item.prepared) renderStatus(previousStatus);
         notify(error.message, true);
       } finally {
+        button.removeAttribute('aria-busy');
         button.disabled = item.preparing;
-        if (!item.prepared && !item.preparing) button.textContent = 'PREPARE';
+        if (item.prepared) button.textContent = 'PLAY AGAIN';
+        else if (!item.preparing) button.textContent = 'PREPARE';
       }
     });
     row.append(copy, button);

@@ -793,22 +793,27 @@ class RadioEngine:
         settings.pending_video_title = None
         self.store.save()
         if action == "play_now":
-            self._request_play_now()
+            self._request_play_now(settings.queued_video_title)
         return settings
 
-    def _request_play_now(self) -> None:
+    def _request_play_now(self, title: str | None = None) -> None:
         with self._lock:
             active = bool(self._thread and self._thread.is_alive())
+            decoder = self._active_decoder if active else None
             self._pause_generation += 1
             self._playback_paused.clear()
             self._source_paused = False
             self._pending_music_source_change = False
             if active:
                 self._play_now_requested.set()
-                self._status.state = "running"
-                self._status.detail = "Switching podcast"
+                self._status.state = "starting"
+                self._status.mode = "preparing"
+                self._status.detail = f"Preparing {title}" if title else "Preparing selected podcast"
+                self._status.now_playing = ""
+                self._status.podcast = title or ""
+                self._status.error = None
         if active:
-            self._terminate(self._active_decoder)
+            self._terminate(decoder)
             self._pause_spotify()
         else:
             self._play_now_requested.clear()
@@ -943,7 +948,7 @@ class RadioEngine:
         settings.queued_video_title = title
         self.store.save()
         if action == "play_now":
-            self._request_play_now()
+            self._request_play_now(title)
 
     def _plan_episode(self, downloaded: DownloadedEpisode) -> DeepSeekPlan:
         transcript = downloaded.transcript_path.read_text(encoding="utf-8")
@@ -1092,34 +1097,37 @@ class RadioEngine:
         title: str,
         episode_id: str,
     ) -> None:
+        self._pause_spotify()
         with self._lock:
+            if self._stop.is_set() or self._play_now_requested.is_set():
+                return
+            self._status.state = "running"
             self._status.mode = "podcast"
             self._status.now_playing = title
             self._status.detail = "Podcast segment"
-        self._pause_spotify()
-        decoder = subprocess.Popen(
-            (
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-ss",
-                f"{start:.3f}",
-                "-i",
-                str(path),
-                "-t",
-                f"{end - start:.3f}",
-                "-f",
-                "s16le",
-                "-ar",
-                str(self.sample_rate),
-                "-ac",
-                str(self.channels),
-                "pipe:1",
-            ),
-            stdout=subprocess.PIPE,
-        )
-        self._active_decoder = decoder
+            decoder = subprocess.Popen(
+                (
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-ss",
+                    f"{start:.3f}",
+                    "-i",
+                    str(path),
+                    "-t",
+                    f"{end - start:.3f}",
+                    "-f",
+                    "s16le",
+                    "-ar",
+                    str(self.sample_rate),
+                    "-ac",
+                    str(self.channels),
+                    "pipe:1",
+                ),
+                stdout=subprocess.PIPE,
+            )
+            self._active_decoder = decoder
         self._pcm_source_active.set()
         position = start
 
@@ -1167,6 +1175,7 @@ class RadioEngine:
         if not self._spotify_audio_ready.wait(timeout=15):
             raise RadioError("Spotify started without producing audio")
         with self._lock:
+            self._status.state = "running"
             self._status.mode = "music"
             self._status.detail = f"{songs_per_break}-song music break"
             self._status.now_playing = source_name
