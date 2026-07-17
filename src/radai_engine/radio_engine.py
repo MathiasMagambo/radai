@@ -192,7 +192,16 @@ class RadioEngine:
 
     def status(self) -> RadioStatus:
         with self._lock:
-            return RadioStatus(**asdict(self._status))
+            snapshot = asdict(self._status)
+            manual_breaks = getattr(self, "_manual_music_breaks", set())
+            if snapshot["podcast_id"] and manual_breaks:
+                snapshot["music_breaks_sec"] = tuple(
+                    sorted(
+                        set(snapshot["music_breaks_sec"])
+                        | manual_breaks
+                    )
+                )
+            return RadioStatus(**snapshot)
 
     def start(self) -> RadioStatus:
         with self._lock:
@@ -355,7 +364,8 @@ class RadioEngine:
                 raise RadioError("A music break is already being added")
             if not current + 1.0 < target < duration - 1.0:
                 raise RadioError("Music breaks must be added ahead of the live podcast position")
-            if any(abs(existing - target) < 1.0 for existing in self._status.music_breaks_sec):
+            known_breaks = set(self._status.music_breaks_sec) | self._manual_music_breaks
+            if any(abs(existing - target) < 1.0 for existing in known_breaks):
                 raise RadioError("A music break already exists at that position")
             self._manual_music_breaks.add(target)
             self._status.music_breaks_sec = tuple(

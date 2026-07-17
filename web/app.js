@@ -73,6 +73,8 @@ let timelineBreakKey = '';
 let musicBreakSelecting = false;
 let musicBreakSubmitting = false;
 let musicBreakSelectionPosition = null;
+let timelineAction = 'seek';
+let musicBreakSelectionEpisodeId = null;
 let pendingMusicBreak = null;
 let lastMusicBreakError = '';
 let channelSources = [];
@@ -286,13 +288,16 @@ function updateMusicBreakCursor(duration) {
 
 function renderMusicBreakControl(status) {
   const duration = Number(status.podcast_duration_sec);
-  const available = (
-    duration > 0
-    && status.mode !== 'preparing'
-    && ['running', 'paused'].includes(status.state)
-  );
+  const available = duration > 0 && ['running', 'paused'].includes(status.state);
   const busy = musicBreakSubmitting || Boolean(status.music_break_pending);
-  if (!available && musicBreakSelecting) {
+  if (
+    musicBreakSelecting
+    && (
+      !available
+      || !status.podcast_id
+      || status.podcast_id !== musicBreakSelectionEpisodeId
+    )
+  ) {
     musicBreakSelecting = false;
     timelineScrubbing = false;
     musicBreakSelectionPosition = null;
@@ -313,7 +318,7 @@ function renderMusicBreakControl(status) {
 
 function renderPodcastTimeline(status) {
   const duration = Number(status.podcast_duration_sec);
-  if (!(duration > 0) || status.mode === 'preparing') {
+  if (!(duration > 0)) {
     podcastTimeline.hidden = true;
     return;
   }
@@ -438,11 +443,18 @@ async function refreshStatus() {
   }
 }
 
+function prepareTimelineSeek() {
+  if (!musicBreakSelecting && !musicBreakSubmitting) timelineAction = 'seek';
+}
+
+podcastProgress.addEventListener('pointerdown', prepareTimelineSeek);
+podcastProgress.addEventListener('keydown', prepareTimelineSeek);
+
 podcastProgress.addEventListener('input', () => {
   timelineScrubbing = true;
   const duration = Number(podcastProgress.max) || 1;
   const position = Number(podcastProgress.value) || 0;
-  if (musicBreakSelecting) musicBreakSelectionPosition = position;
+  if (timelineAction === 'music-break') musicBreakSelectionPosition = position;
   podcastPosition.textContent = formatPlaybackTime(position);
   podcastProgress.setAttribute(
     'aria-valuetext',
@@ -456,7 +468,17 @@ podcastProgress.addEventListener('input', () => {
 });
 
 podcastProgress.addEventListener('change', async () => {
-  if (musicBreakSelecting) {
+  if (timelineAction === 'music-break') {
+    if (
+      !musicBreakSelecting
+      || !lastStatus.podcast_id
+      || lastStatus.podcast_id !== musicBreakSelectionEpisodeId
+    ) {
+      timelineAction = 'seek';
+      timelineScrubbing = false;
+      renderStatus(lastStatus);
+      return;
+    }
     const position = Number(podcastProgress.value) || 0;
     const minimum = musicBreakMinimum(lastStatus);
     if (position < minimum) {
@@ -464,6 +486,8 @@ podcastProgress.addEventListener('change', async () => {
       renderStatus(lastStatus);
       return;
     }
+    timelineAction = 'seek';
+    musicBreakSelectionEpisodeId = null;
     musicBreakSelecting = false;
     musicBreakSubmitting = true;
     pendingMusicBreak = {
@@ -524,6 +548,8 @@ musicBreakLink.addEventListener('click', () => {
     musicBreakSelecting = false;
     timelineScrubbing = false;
     musicBreakSelectionPosition = null;
+    timelineAction = 'seek';
+    musicBreakSelectionEpisodeId = null;
     renderStatus(lastStatus);
     return;
   }
@@ -533,6 +559,8 @@ musicBreakLink.addEventListener('click', () => {
     notify('NO FUTURE PODCAST POSITION IS AVAILABLE FOR A MUSIC BREAK', true);
     return;
   }
+  timelineAction = 'music-break';
+  musicBreakSelectionEpisodeId = lastStatus.podcast_id;
   musicBreakSelecting = true;
   timelineScrubbing = true;
   musicBreakSelectionPosition = minimum;

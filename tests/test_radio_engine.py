@@ -733,6 +733,40 @@ def test_add_music_break_persists_future_position_without_interrupting_playback(
     }
 
 
+def test_status_keeps_live_manual_breaks_in_timeline() -> None:
+    engine = object.__new__(RadioEngine)
+    engine._lock = threading.RLock()
+    engine._status = RadioStatus(
+        state="paused",
+        mode="preparing",
+        podcast_id="episode-1",
+        podcast_position_sec=120.0,
+        podcast_duration_sec=600.0,
+        music_breaks_sec=(300.0,),
+    )
+    engine._manual_music_breaks = {240.0}
+
+    assert engine.status().music_breaks_sec == (240.0, 300.0)
+
+
+def test_add_music_break_rejects_live_manual_duplicate() -> None:
+    engine = object.__new__(RadioEngine)
+    engine._lock = threading.RLock()
+    engine._current_episode_id = "episode-1"
+    engine._status = RadioStatus(
+        state="paused",
+        mode="preparing",
+        podcast_id="episode-1",
+        podcast_position_sec=120.0,
+        podcast_duration_sec=600.0,
+        music_breaks_sec=(300.0,),
+    )
+    engine._manual_music_breaks = {240.0}
+
+    with pytest.raises(RadioError, match="already exists"):
+        engine.add_music_break(240.0)
+
+
 def test_live_manual_break_interrupts_segment_and_plays_music() -> None:
     segment_starts: list[float] = []
     music_breaks: list[bool] = []
