@@ -1,11 +1,12 @@
 [Unit]
 Description=Spotify desktop bridge for Radai
-After=graphical-session.target
+Requires=radai-xvfb.service
+After=radai-xvfb.service
 
 [Service]
 Type=simple
-Environment=DISPLAY=:0
-ExecStart=/usr/bin/spotify --remote-debugging-port=9223 --remote-allow-origins=*
+Environment=DISPLAY=:99
+ExecStart=/snap/bin/spotify --remote-debugging-port=9223 --remote-allow-origins=* --disable-gpu
 Restart=always
 RestartSec=5
 

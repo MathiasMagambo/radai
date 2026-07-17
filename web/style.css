@@ -201,6 +201,32 @@ p { margin: 0; }
   box-shadow: 0 0 10px rgba(215,255,68,.55);
 }
 #streamStatus { color: var(--dim); font-size: .58rem; letter-spacing: .08em; }
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.music-break-link {
+  width: auto;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  color: var(--dim);
+  font-size: .56rem;
+  letter-spacing: .06em;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.music-break-link:hover,
+.music-break-link:focus-visible,
+.music-break-link.selecting { color: var(--fg); }
+.music-break-link:disabled { color: var(--dim); cursor: wait; }
 .podcast-timeline { margin-top: 8px; }
 .podcast-timeline-times {
   display: flex;
@@ -222,6 +248,9 @@ p { margin: 0; }
     var(--line) 100%
   ) center / 100% 3px no-repeat;
 }
+.podcast-timeline-track.adding-break {
+  background: linear-gradient(var(--fg), var(--fg)) center / 100% 3px no-repeat;
+}
 .podcast-breaks {
   position: absolute;
   inset: 2px 0;
@@ -236,6 +265,23 @@ p { margin: 0; }
   background: #ffcb44;
   box-shadow: 0 0 7px rgba(255,203,68,.7);
 }
+.music-break-cursor {
+  display: none;
+  position: absolute;
+  z-index: 2;
+  top: 1px;
+  width: 17px;
+  height: 16px;
+  transform: translateX(-8px);
+  place-items: center;
+  background: var(--fg);
+  color: var(--bg);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+}
+.podcast-timeline-track.adding-break .music-break-cursor { display: grid; }
 #podcastProgress {
   appearance: none;
   position: absolute;
@@ -247,6 +293,12 @@ p { margin: 0; }
   border: 0;
   background: transparent;
   cursor: ew-resize;
+}
+.podcast-timeline-track.adding-break #podcastProgress::-webkit-slider-thumb {
+  opacity: 0;
+}
+.podcast-timeline-track.adding-break #podcastProgress::-moz-range-thumb {
+  opacity: 0;
 }
 #podcastProgress:disabled { cursor: wait; opacity: .65; }
 #podcastProgress::-webkit-slider-runnable-track { height: 3px; background: transparent; }

@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/style.css?v=12">
+  <link rel="stylesheet" href="/style.css?v=15">
 </head>
 <body>
   <main>
@@ -67,7 +67,8 @@
         <div class="stream-readout" aria-live="polite">
           <div class="stream-readout-head">
             <span class="stream-name"><i></i>LIVE STREAM</span>
-            <span id="streamStatus">READY</span>
+            <span id="streamStatus" class="visually-hidden">READY</span>
+            <button id="musicBreakLink" class="music-break-link" type="button">ADD MUSIC BREAK</button>
           </div>
           <div id="podcastTimeline" class="podcast-timeline" hidden>
             <div class="podcast-timeline-times">
@@ -76,6 +77,7 @@
             </div>
             <div class="podcast-timeline-track">
               <div id="podcastBreaks" class="podcast-breaks" aria-hidden="true"></div>
+              <span id="musicBreakCursor" class="music-break-cursor" aria-hidden="true">+</span>
               <input id="podcastProgress" type="range" min="0" max="1" step="1" value="0" aria-label="Podcast playback position" aria-describedby="podcastSeekLimit">
             </div>
             <small id="podcastSeekLimit">SHARED SEEK · FULL EPISODE</small>
@@ -256,6 +258,6 @@
       <span id="message" role="status"></span>
     </footer>
   </main>
-  <script src="/app.js?v=15" defer></script>
+  <script src="/app.js?v=16" defer></script>
 </body>
 </html>

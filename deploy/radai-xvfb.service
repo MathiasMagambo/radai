@@ -1,0 +1,11 @@
+[Unit]
+Description=Virtual display for Radai Spotify desktop
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/Xvfb :99 -screen 0 1365x900x24 -nolisten tcp
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

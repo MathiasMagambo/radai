@@ -186,6 +186,8 @@ class BufferedAudioStream:
             podcast_position_sec=delayed.podcast_position_sec,
             podcast_duration_sec=delayed.podcast_duration_sec,
             music_breaks_sec=delayed.music_breaks_sec,
+            music_break_pending=current.music_break_pending,
+            music_break_error=current.music_break_error,
             started_at=current.started_at,
             error=current.error,
             preparation_error=current.preparation_error,
@@ -352,6 +354,7 @@ class RadioApplication:
             "stream_delay_sec": self.stream_buffer.delay_seconds,
             "podcast_seek_scope": "shared",
             "podcast_seek_step_sec": 1,
+            "music_break_future_guard_sec": self.stream_buffer.delay_seconds + 3,
         }
 
 
@@ -458,6 +461,10 @@ class RadioHandler(BaseHTTPRequestHandler):
                     HTTPStatus.OK,
                     {"status": asdict(self.app.engine.restart_current_podcast())},
                 )
+                return
+            if parsed.path == "/api/music-break":
+                status = self.app.engine.add_music_break(float(body.get("position_sec", 0)))
+                self._json(HTTPStatus.ACCEPTED, {"status": asdict(status)})
                 return
             if parsed.path == "/api/seek":
                 status = self.app.engine.seek_current_podcast(float(body.get("position_sec", 0)))

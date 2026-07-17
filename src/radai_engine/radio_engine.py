@@ -69,6 +69,8 @@ class RadioStatus:
     podcast_position_sec: float | None = None
     podcast_duration_sec: float | None = None
     music_breaks_sec: tuple[float, ...] = ()
+    music_break_pending: bool = False
+    music_break_error: str | None = None
     started_at: float | None = None
     error: str | None = None
     preparation_error: str | None = None
@@ -176,12 +178,14 @@ class RadioEngine:
         self._prepare_now = threading.Event()
         self._video_thread: threading.Thread | None = None
         self._preparing_history_id: str | None = None
+        self._music_break_thread: threading.Thread | None = None
         self._current_episode_id: str | None = None
         self._persisted_podcast_checkpoint_sec = (
             self.store.settings.podcast_checkpoint_position_sec
         )
         self._restart_podcast = threading.Event()
         self._restart_position_sec = 0.0
+        self._manual_music_breaks: set[float] = set()
         self._play_now_requested = threading.Event()
         self._backfill_episode_history()
         self._enforce_storage_retention()
@@ -332,6 +336,94 @@ class RadioEngine:
         self._checkpoint_podcast(episode_id, target, force=True)
         self._pause_spotify()
         return self.status()
+
+    def add_music_break(self, position_sec: float) -> RadioStatus:
+        with self._lock:
+            duration = self._status.podcast_duration_sec
+            current = self._status.podcast_position_sec
+            episode_id = self._current_episode_id
+            target = round(float(position_sec), 3)
+            if (
+                not episode_id
+                or duration is None
+                or current is None
+                or duration <= 0
+                or self._status.state not in {"running", "paused"}
+            ):
+                raise RadioError("No podcast is available for a music break")
+            if self._status.music_break_pending:
+                raise RadioError("A music break is already being added")
+            if not current + 1.0 < target < duration - 1.0:
+                raise RadioError("Music breaks must be added ahead of the live podcast position")
+            if any(abs(existing - target) < 1.0 for existing in self._status.music_breaks_sec):
+                raise RadioError("A music break already exists at that position")
+            self._manual_music_breaks.add(target)
+            self._status.music_breaks_sec = tuple(
+                sorted((*self._status.music_breaks_sec, target))
+            )
+            self._status.music_break_pending = True
+            self._status.music_break_error = None
+            pending_status = self.status()
+            thread = threading.Thread(
+                target=self._persist_manual_music_break,
+                args=(episode_id, target),
+                name="radai-music-break-planner",
+                daemon=True,
+            )
+            self._music_break_thread = thread
+            thread.start()
+        return pending_status
+
+    def _manual_music_breaks_path(self, episode_id: str) -> Path:
+        return self.processed_dir / f"{episode_id}.manual-breaks.json"
+
+    def _load_manual_music_breaks(self, episode_id: str) -> tuple[float, ...]:
+        path = self._manual_music_breaks_path(episode_id)
+        if not path.exists():
+            return ()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        values = payload.get("positions_sec", []) if isinstance(payload, dict) else []
+        return tuple(
+            sorted(
+                {
+                    round(float(value), 3)
+                    for value in values
+                    if float(value) >= 0
+                }
+            )
+        )
+
+    def _persist_manual_music_break(self, episode_id: str, target: float) -> None:
+        try:
+            path = self._manual_music_breaks_path(episode_id)
+            positions = set(self._load_manual_music_breaks(episode_id))
+            positions.add(target)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps(
+                    {
+                        "episode_id": episode_id,
+                        "positions_sec": sorted(positions),
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            temporary.replace(path)
+        except Exception as exc:
+            with self._lock:
+                self._manual_music_breaks.discard(target)
+                if self._status.podcast_id == episode_id:
+                    self._status.music_breaks_sec = tuple(
+                        value
+                        for value in self._status.music_breaks_sec
+                        if value != target
+                    )
+                self._status.music_break_error = f"Music break could not be added: {exc}"
+        finally:
+            with self._lock:
+                self._status.music_break_pending = False
 
 
     def update_settings(
@@ -1069,6 +1161,13 @@ class RadioEngine:
     ) -> bool:
         episode_id = downloaded.episode.id
         duration = self._duration(processed)
+        manual_music_breaks = tuple(
+            position
+            for position in self._load_manual_music_breaks(episode_id)
+            if 0 < position < duration
+        )
+        with self._lock:
+            self._manual_music_breaks = set(manual_music_breaks)
         boundaries = [0.0]
         if self.store.settings.music_placement == "ads":
             placements = (cut.start_sec for cut in plan.ad_cuts)
@@ -1078,6 +1177,7 @@ class RadioEngine:
             cleaned = _clean_time(placement, plan.ad_cuts)
             if 60 < cleaned < duration - 60:
                 boundaries.append(cleaned)
+        boundaries.extend(manual_music_breaks)
         boundaries.append(duration)
         boundaries = sorted(set(round(value, 3) for value in boundaries))
         music_breaks = tuple(boundaries[1:-1])
@@ -1100,24 +1200,38 @@ class RadioEngine:
             for index, (start, end) in enumerate(zip(boundaries, boundaries[1:])):
                 if end <= resume_position + 0.001:
                     continue
-                if self._stop.is_set() or self._play_now_requested.is_set():
-                    return False
-                self._wait_while_paused()
-                self._play_podcast_segment(
-                    processed,
-                    max(start, resume_position),
-                    end,
-                    downloaded.episode.title,
-                    episode_id,
-                )
-                if self._stop.is_set():
-                    return False
-                if self._play_now_requested.is_set():
-                    self._play_now_requested.clear()
-                    return False
+                segment_start = max(start, resume_position)
+                while segment_start < end - 0.001:
+                    if self._stop.is_set() or self._play_now_requested.is_set():
+                        return False
+                    self._wait_while_paused()
+                    manual_break = self._play_podcast_segment(
+                        processed,
+                        segment_start,
+                        end,
+                        downloaded.episode.title,
+                        episode_id,
+                    )
+                    if self._stop.is_set():
+                        return False
+                    if self._play_now_requested.is_set():
+                        self._play_now_requested.clear()
+                        return False
+                    if self._restart_podcast.is_set():
+                        break
+                    if manual_break is None:
+                        resume_position = end
+                        break
+                    resume_position = manual_break
+                    self._play_music_break()
+                    if self._play_now_requested.is_set():
+                        self._play_now_requested.clear()
+                        return False
+                    if self._restart_podcast.is_set():
+                        break
+                    segment_start = manual_break
                 if self._restart_podcast.is_set():
                     break
-                resume_position = end
                 if index < len(boundaries) - 2:
                     self._play_music_break()
                     if self._play_now_requested.is_set():
@@ -1146,11 +1260,11 @@ class RadioEngine:
         end: float,
         title: str,
         episode_id: str,
-    ) -> None:
+    ) -> float | None:
         self._pause_spotify()
         with self._lock:
             if self._stop.is_set() or self._play_now_requested.is_set():
-                return
+                return None
             self._status.state = "running"
             self._status.mode = "podcast"
             self._status.now_playing = title
@@ -1180,9 +1294,10 @@ class RadioEngine:
             self._active_decoder = decoder
         self._pcm_source_active.set()
         position = start
+        manual_break_position: float | None = None
 
-        def checkpoint(written_bytes: int) -> None:
-            nonlocal position
+        def checkpoint(written_bytes: int) -> bool:
+            nonlocal manual_break_position, position
             position = min(
                 end,
                 start
@@ -1191,33 +1306,45 @@ class RadioEngine:
             )
             if not self._restart_podcast.is_set():
                 with self._lock:
+                    reached = (
+                        value
+                        for value in self._manual_music_breaks
+                        if start + 0.001 < value < end - 0.001 and value <= position
+                    )
+                    manual_break_position = min(reached, default=None)
+                    if manual_break_position is not None:
+                        position = manual_break_position
                     self._status.podcast_position_sec = position
-            if not self._restart_podcast.is_set():
                 self._checkpoint_podcast(episode_id, position)
+            return manual_break_position is None
 
         try:
             assert decoder.stdout is not None
             self._copy_pcm(decoder.stdout, checkpoint)
-            if (
-                decoder.wait(timeout=30) != 0
-                and not self._stop.is_set()
-                and not self._restart_podcast.is_set()
-                and not self._play_now_requested.is_set()
-            ):
-                raise RadioError(f"podcast decoder failed for {path.name}")
-            if (
-                not self._stop.is_set()
-                and not self._restart_podcast.is_set()
-                and not self._play_now_requested.is_set()
-            ):
-                position = end
-                with self._lock:
-                    self._status.podcast_position_sec = position
+            if manual_break_position is not None:
+                self._terminate(decoder)
+            else:
+                if (
+                    decoder.wait(timeout=30) != 0
+                    and not self._stop.is_set()
+                    and not self._restart_podcast.is_set()
+                    and not self._play_now_requested.is_set()
+                ):
+                    raise RadioError(f"podcast decoder failed for {path.name}")
+                if (
+                    not self._stop.is_set()
+                    and not self._restart_podcast.is_set()
+                    and not self._play_now_requested.is_set()
+                ):
+                    position = end
+                    with self._lock:
+                        self._status.podcast_position_sec = position
         finally:
             if not self._restart_podcast.is_set():
                 self._checkpoint_podcast(episode_id, position, force=True)
             self._pcm_source_active.clear()
             self._active_decoder = None
+        return manual_break_position
 
     def _play_music_break(self) -> None:
         self._wait_while_paused()
@@ -1320,7 +1447,7 @@ class RadioEngine:
     def _copy_pcm(
         self,
         source: BinaryIO,
-        on_progress: Callable[[int], None] | None = None,
+        on_progress: Callable[[int], bool | None] | None = None,
     ) -> None:
         pending = b""
         written_bytes = 0
@@ -1331,8 +1458,8 @@ class RadioEngine:
             complete = pending + chunk
             pending = self._write_complete_frames(complete)
             written_bytes += len(complete) - len(pending)
-            if on_progress is not None:
-                on_progress(written_bytes)
+            if on_progress is not None and on_progress(written_bytes) is False:
+                break
 
     def _write_complete_frames(self, chunk: bytes) -> bytes:
         frame_size = self.channels * self.sample_width

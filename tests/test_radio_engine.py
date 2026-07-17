@@ -1,13 +1,15 @@
 from collections import deque
+import json
 from io import BytesIO
 import signal
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+import pytest
 
 from radai_engine.deepseek import DeepSeekError
 from radai_engine.models import CutRange, MusicInsertion
-from radai_engine.radio_engine import RadioEngine, RadioSettings, RadioStatus, StateStore, _clean_time, _dedupe_insertions, _merge_cuts, _transcript_chunks
+from radai_engine.radio_engine import RadioEngine, RadioError, RadioSettings, RadioStatus, StateStore, _clean_time, _dedupe_insertions, _merge_cuts, _transcript_chunks
 from radai_engine.spotify_desktop import SpotifyDesktopController
 from radai_engine.web import BufferedAudioStream, _mp3_frame_start, _render_html_template
 
@@ -695,6 +697,93 @@ def test_seek_restarts_current_podcast_at_bounded_position() -> None:
     assert interrupted == [engine._active_decoder, "spotify"]
 
 
+def test_add_music_break_persists_future_position_without_interrupting_playback(
+    tmp_path: Path,
+) -> None:
+    engine = object.__new__(RadioEngine)
+    engine._lock = threading.RLock()
+    engine._current_episode_id = "episode-1"
+    engine._status = RadioStatus(
+        state="running",
+        mode="podcast",
+        podcast_id="episode-1",
+        podcast_position_sec=120.0,
+        podcast_duration_sec=600.0,
+        music_breaks_sec=(300.0,),
+    )
+    engine._manual_music_breaks = set()
+    engine._music_break_thread = None
+    engine.processed_dir = tmp_path
+
+    status = engine.add_music_break(240.0)
+    assert engine._music_break_thread is not None
+    engine._music_break_thread.join(timeout=1)
+
+    assert status.music_break_pending
+    assert engine.status().music_break_pending is False
+    assert engine.status().music_break_error is None
+    assert engine.status().mode == "podcast"
+    assert engine.status().music_breaks_sec == (240.0, 300.0)
+    payload = json.loads(
+        (tmp_path / "episode-1.manual-breaks.json").read_text(encoding="utf-8")
+    )
+    assert payload == {
+        "episode_id": "episode-1",
+        "positions_sec": [240.0],
+    }
+
+
+def test_live_manual_break_interrupts_segment_and_plays_music() -> None:
+    segment_starts: list[float] = []
+    music_breaks: list[bool] = []
+    segment_results = iter((240.0, None))
+    engine = object.__new__(RadioEngine)
+    engine._lock = threading.RLock()
+    engine._stop = threading.Event()
+    engine._play_now_requested = threading.Event()
+    engine._restart_podcast = threading.Event()
+    engine._playback_paused = threading.Event()
+    engine._restart_position_sec = 0.0
+    engine._status = RadioStatus(state="running")
+    engine.store = SimpleNamespace(settings=RadioSettings(music_placement="ads"))
+    engine._duration = lambda _path: 600.0  # type: ignore[method-assign]
+    engine._load_manual_music_breaks = lambda _episode_id: ()  # type: ignore[method-assign]
+    engine._checkpoint_podcast = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+
+    def play_segment(_path, start, *_args) -> float | None:
+        segment_starts.append(start)
+        return next(segment_results)
+
+    engine._play_podcast_segment = play_segment  # type: ignore[method-assign]
+    engine._play_music_break = lambda: music_breaks.append(True)  # type: ignore[method-assign]
+    downloaded = SimpleNamespace(
+        episode=SimpleNamespace(id="episode-1", title="Episode One"),
+    )
+    plan = SimpleNamespace(ad_cuts=(), music_insertions=())
+
+    assert engine._play_episode(downloaded, Path("episode.mp3"), plan)
+    assert segment_starts == [0.0, 240.0]
+    assert music_breaks == [True]
+
+
+def test_add_music_break_rejects_position_behind_live_podcast(tmp_path: Path) -> None:
+    engine = object.__new__(RadioEngine)
+    engine._lock = threading.RLock()
+    engine._current_episode_id = "episode-1"
+    engine._status = RadioStatus(
+        state="running",
+        mode="podcast",
+        podcast_id="episode-1",
+        podcast_position_sec=120.0,
+        podcast_duration_sec=600.0,
+    )
+    engine._manual_music_breaks = set()
+    engine.processed_dir = tmp_path
+
+    with pytest.raises(RadioError, match="ahead of the live podcast position"):
+        engine.add_music_break(100.0)
+
+
 def test_episode_status_exposes_duration_and_music_breaks() -> None:
     captured: list[RadioStatus] = []
     engine = object.__new__(RadioEngine)
@@ -709,6 +798,7 @@ def test_episode_status_exposes_duration_and_music_breaks() -> None:
         settings=RadioSettings(music_placement="ads"),
     )
     engine._duration = lambda _path: 600.0  # type: ignore[method-assign]
+    engine._load_manual_music_breaks = lambda _episode_id: ()  # type: ignore[method-assign]
     engine._checkpoint_podcast = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
 
     def play_segment(*_args, **_kwargs) -> None:
@@ -829,6 +919,7 @@ def test_podcast_checkpoint_tracks_pcm_written_to_stream(monkeypatch) -> None:
     engine._status = RadioStatus()
     engine._pcm_source_active = threading.Event()
     engine._active_decoder = None
+    engine._manual_music_breaks = set()
     engine._persisted_podcast_checkpoint_sec = 0.0
     engine.store = SimpleNamespace(
         settings=settings,
@@ -855,6 +946,52 @@ def test_podcast_checkpoint_tracks_pcm_written_to_stream(monkeypatch) -> None:
     assert settings.podcast_checkpoint_episode_id == "episode-1"
     assert settings.podcast_checkpoint_position_sec == 30.0
     assert saved_positions[-1] == 30.0
+
+
+def test_podcast_segment_stops_at_new_manual_music_break(monkeypatch) -> None:
+    class ChunkedPCM(BytesIO):
+        def read(self, _size: int = -1) -> bytes:
+            return super().read(40)
+
+    settings = RadioSettings()
+    engine = object.__new__(RadioEngine)
+    engine.sample_rate = 10
+    engine.channels = 2
+    engine.sample_width = 2
+    engine._lock = threading.RLock()
+    engine._stop = threading.Event()
+    engine._restart_podcast = threading.Event()
+    engine._play_now_requested = threading.Event()
+    engine._status = RadioStatus()
+    engine._pcm_source_active = threading.Event()
+    engine._active_decoder = None
+    engine._manual_music_breaks = {25.0}
+    engine._persisted_podcast_checkpoint_sec = 0.0
+    engine.store = SimpleNamespace(settings=settings, save=lambda: None)
+    engine._pause_spotify = lambda: None  # type: ignore[method-assign]
+    engine._write_pcm = lambda _chunk: None  # type: ignore[method-assign]
+    terminated: list[object] = []
+    engine._terminate = terminated.append  # type: ignore[method-assign]
+    decoder = SimpleNamespace(
+        stdout=ChunkedPCM(bytes(400)),
+        wait=lambda timeout: 0,
+    )
+    monkeypatch.setattr(
+        "radai_engine.radio_engine.subprocess.Popen",
+        lambda *_args, **_kwargs: decoder,
+    )
+
+    reached = engine._play_podcast_segment(
+        Path("episode.mp3"),
+        20.0,
+        30.0,
+        "Episode",
+        "episode-1",
+    )
+
+    assert reached == 25.0
+    assert engine.status().podcast_position_sec == 25.0
+    assert terminated == [decoder]
 
 
 def test_stream_restart_selects_checkpoint_episode_and_resumes_position(tmp_path: Path) -> None:
@@ -890,6 +1027,7 @@ def test_stream_restart_selects_checkpoint_episode_and_resumes_position(tmp_path
     engine._restart_podcast = threading.Event()
     engine._prepared_by_id = lambda episode_id, _channel: episodes.get(episode_id)  # type: ignore[method-assign]
     engine._duration = lambda _path: 100.0  # type: ignore[method-assign]
+    engine._load_manual_music_breaks = lambda _episode_id: ()  # type: ignore[method-assign]
     engine._wait_while_paused = lambda: None  # type: ignore[method-assign]
     segments: list[tuple[float, float, str]] = []
     engine._play_podcast_segment = (  # type: ignore[method-assign]

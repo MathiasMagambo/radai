@@ -14,11 +14,13 @@ const streamPlay = $('#streamPlay');
 const streamMute = $('#streamMute');
 const streamVolume = $('#streamVolume');
 const streamStatus = $('#streamStatus');
+const musicBreakLink = $('#musicBreakLink');
 const podcastTimeline = $('#podcastTimeline');
 const podcastPosition = $('#podcastPosition');
 const podcastDuration = $('#podcastDuration');
 const podcastBreaks = $('#podcastBreaks');
 const podcastProgress = $('#podcastProgress');
+const musicBreakCursor = $('#musicBreakCursor');
 const podcastSeekLimit = $('#podcastSeekLimit');
 const playlistInput = $('#playlist');
 const playlistOptions = $('#playlistOptions');
@@ -52,6 +54,7 @@ let radioSettings = {
   played_episodes_per_source: 1,
   stream_delay_sec: 15,
   podcast_seek_step_sec: 1,
+  music_break_future_guard_sec: 18,
 };
 let lastStatus = { state: 'stopped', mode: 'idle' };
 let playlistCatalog = [];
@@ -67,6 +70,10 @@ let streamReconnecting = false;
 let pendingReplay = null;
 let timelineScrubbing = false;
 let timelineBreakKey = '';
+let musicBreakSelecting = false;
+let musicBreakSubmitting = false;
+let musicBreakSelectionPosition = null;
+let lastMusicBreakError = '';
 let channelSources = [];
 let settingsDirty = false;
 
@@ -252,6 +259,45 @@ function formatPlaybackTime(value) {
     : `${minutes}:${String(remainder).padStart(2, '0')}`;
 }
 
+function musicBreakMinimum(status) {
+  const position = Math.max(0, Number(status.podcast_position_sec) || 0);
+  const guard = Math.max(1, Number(radioSettings.music_break_future_guard_sec) || 18);
+  return Math.ceil(position + guard);
+}
+
+function updateMusicBreakCursor(duration) {
+  const position = Number(musicBreakSelectionPosition);
+  if (!(duration > 0) || !Number.isFinite(position)) return;
+  musicBreakCursor.style.left = `${Math.min(100, Math.max(0, (position / duration) * 100))}%`;
+}
+
+function renderMusicBreakControl(status) {
+  const duration = Number(status.podcast_duration_sec);
+  const available = (
+    duration > 0
+    && status.mode !== 'preparing'
+    && ['running', 'paused'].includes(status.state)
+  );
+  const busy = musicBreakSubmitting || Boolean(status.music_break_pending);
+  if (!available && musicBreakSelecting) {
+    musicBreakSelecting = false;
+    timelineScrubbing = false;
+    musicBreakSelectionPosition = null;
+  }
+  const active = musicBreakSelecting || busy;
+  podcastProgress.parentElement.classList.toggle('adding-break', active);
+  musicBreakLink.classList.toggle('selecting', musicBreakSelecting);
+  musicBreakLink.disabled = !available || busy;
+  musicBreakLink.textContent = busy
+    ? 'ADDING MUSIC BREAK…'
+    : (musicBreakSelecting ? 'CANCEL MUSIC BREAK' : 'ADD MUSIC BREAK');
+  podcastProgress.disabled = busy;
+  updateMusicBreakCursor(duration);
+  const error = status.music_break_error || '';
+  if (error && error !== lastMusicBreakError) notify(error, true);
+  lastMusicBreakError = error;
+}
+
 function renderPodcastTimeline(status) {
   const duration = Number(status.podcast_duration_sec);
   if (!(duration > 0) || status.mode === 'preparing') {
@@ -262,7 +308,17 @@ function renderPodcastTimeline(status) {
   podcastTimeline.hidden = false;
   podcastProgress.max = String(duration);
   podcastProgress.step = String(radioSettings.podcast_seek_step_sec || 1);
-  if (!timelineScrubbing) {
+  if (musicBreakSelecting) {
+    const minimum = musicBreakMinimum(status);
+    podcastProgress.min = String(minimum);
+    musicBreakSelectionPosition = Math.max(
+      minimum,
+      Number(musicBreakSelectionPosition) || minimum,
+    );
+    podcastProgress.value = String(musicBreakSelectionPosition);
+    podcastPosition.textContent = formatPlaybackTime(musicBreakSelectionPosition);
+  } else if (!timelineScrubbing) {
+    podcastProgress.min = '0';
     podcastProgress.value = String(position);
     podcastPosition.textContent = formatPlaybackTime(position);
   }
@@ -275,6 +331,7 @@ function renderPodcastTimeline(status) {
     '--podcast-progress',
     `${duration ? (Number(podcastProgress.value) / duration) * 100 : 0}%`,
   );
+  updateMusicBreakCursor(duration);
   const breaks = Array.isArray(status.music_breaks_sec) ? status.music_breaks_sec : [];
   const breakKey = `${status.podcast_id}:${duration}:${breaks.join(',')}`;
   if (breakKey !== timelineBreakKey) {
@@ -288,9 +345,9 @@ function renderPodcastTimeline(status) {
     }));
   }
   const delay = Math.max(0, Math.round(Number(radioSettings.stream_delay_sec) || 0));
-  podcastSeekLimit.textContent = (
-    `SHARED SEEK · FULL EPISODE · ${podcastProgress.step} SEC STEPS · ~${delay} SEC APPLY`
-  );
+  podcastSeekLimit.textContent = musicBreakSelecting
+    ? `SELECT A FUTURE BREAK · ${formatPlaybackTime(Number(podcastProgress.min))} MINIMUM`
+    : `SHARED SEEK · FULL EPISODE · ${podcastProgress.step} SEC STEPS · ~${delay} SEC APPLY`;
 }
 
 function renderStatus(status) {
@@ -346,6 +403,7 @@ function renderStatus(status) {
     button.textContent = isActive(status) ? 'SWAP SOURCE' : 'START RADIO';
   }
   renderPodcastTimeline(status);
+  renderMusicBreakControl(status);
   if (resumeReplay) {
     updateStreamControl('CONNECTING');
     requestPlayerPlayback({ reload: true }).catch(() => {
@@ -370,6 +428,7 @@ podcastProgress.addEventListener('input', () => {
   timelineScrubbing = true;
   const duration = Number(podcastProgress.max) || 1;
   const position = Number(podcastProgress.value) || 0;
+  if (musicBreakSelecting) musicBreakSelectionPosition = position;
   podcastPosition.textContent = formatPlaybackTime(position);
   podcastProgress.setAttribute(
     'aria-valuetext',
@@ -379,9 +438,39 @@ podcastProgress.addEventListener('input', () => {
     '--podcast-progress',
     `${(position / duration) * 100}%`,
   );
+  updateMusicBreakCursor(duration);
 });
 
 podcastProgress.addEventListener('change', async () => {
+  if (musicBreakSelecting) {
+    const position = Number(podcastProgress.value) || 0;
+    const minimum = musicBreakMinimum(lastStatus);
+    if (position < minimum) {
+      notify('MUSIC BREAK MUST BE AHEAD OF THE LIVE PODCAST POSITION', true);
+      renderStatus(lastStatus);
+      return;
+    }
+    musicBreakSelecting = false;
+    musicBreakSubmitting = true;
+    musicBreakSelectionPosition = position;
+    renderStatus(lastStatus);
+    try {
+      const data = await api('/api/music-break', {
+        method: 'POST',
+        body: JSON.stringify({ position_sec: position }),
+      });
+      renderStatus(data.status);
+      notify(`MUSIC BREAK SCHEDULED AT ${formatPlaybackTime(position)}`);
+    } catch (error) {
+      notify(error.message, true);
+      await refreshStatus();
+    } finally {
+      musicBreakSubmitting = false;
+      timelineScrubbing = false;
+      renderStatus(lastStatus);
+    }
+    return;
+  }
   timelineScrubbing = true;
   const position = Number(podcastProgress.value) || 0;
   const resumeAfterSeek = streamWanted;
@@ -408,6 +497,27 @@ podcastProgress.addEventListener('change', async () => {
     timelineScrubbing = false;
     podcastProgress.disabled = false;
   }
+});
+
+musicBreakLink.addEventListener('click', () => {
+  if (musicBreakSelecting) {
+    musicBreakSelecting = false;
+    timelineScrubbing = false;
+    musicBreakSelectionPosition = null;
+    renderStatus(lastStatus);
+    return;
+  }
+  const duration = Number(lastStatus.podcast_duration_sec);
+  const minimum = musicBreakMinimum(lastStatus);
+  if (!(duration > 0) || minimum >= duration - 1) {
+    notify('NO FUTURE PODCAST POSITION IS AVAILABLE FOR A MUSIC BREAK', true);
+    return;
+  }
+  musicBreakSelecting = true;
+  timelineScrubbing = true;
+  musicBreakSelectionPosition = minimum;
+  renderStatus(lastStatus);
+  podcastProgress.focus();
 });
 
 startButton.addEventListener('click', async () => {
