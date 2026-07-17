@@ -73,6 +73,7 @@ let timelineBreakKey = '';
 let musicBreakSelecting = false;
 let musicBreakSubmitting = false;
 let musicBreakSelectionPosition = null;
+let pendingMusicBreak = null;
 let lastMusicBreakError = '';
 let channelSources = [];
 let settingsDirty = false;
@@ -265,6 +266,18 @@ function musicBreakMinimum(status) {
   return Math.ceil(position + guard);
 }
 
+function withPendingMusicBreak(status) {
+  if (!pendingMusicBreak || status.podcast_id !== pendingMusicBreak.podcastId) return status;
+  const breaks = Array.isArray(status.music_breaks_sec) ? status.music_breaks_sec : [];
+  if (breaks.some(position => Math.abs(Number(position) - pendingMusicBreak.position) < 1)) {
+    return status;
+  }
+  return {
+    ...status,
+    music_breaks_sec: [...breaks, pendingMusicBreak.position].sort((a, b) => a - b),
+  };
+}
+
 function updateMusicBreakCursor(duration) {
   const position = Number(musicBreakSelectionPosition);
   if (!(duration > 0) || !Number.isFinite(position)) return;
@@ -383,6 +396,7 @@ function renderStatus(status) {
       }
     }
   }
+  status = withPendingMusicBreak(status);
   lastStatus = status;
   stateText.textContent = status.state.toUpperCase();
   stateDot.classList.toggle('live', status.state === 'running');
@@ -452,6 +466,10 @@ podcastProgress.addEventListener('change', async () => {
     }
     musicBreakSelecting = false;
     musicBreakSubmitting = true;
+    pendingMusicBreak = {
+      podcastId: lastStatus.podcast_id,
+      position,
+    };
     musicBreakSelectionPosition = position;
     renderStatus(lastStatus);
     try {
@@ -462,9 +480,11 @@ podcastProgress.addEventListener('change', async () => {
       renderStatus(data.status);
       notify(`MUSIC BREAK SCHEDULED AT ${formatPlaybackTime(position)}`);
     } catch (error) {
+      pendingMusicBreak = null;
       notify(error.message, true);
       await refreshStatus();
     } finally {
+      pendingMusicBreak = null;
       musicBreakSubmitting = false;
       timelineScrubbing = false;
       renderStatus(lastStatus);
