@@ -14,6 +14,12 @@ const streamPlay = $('#streamPlay');
 const streamMute = $('#streamMute');
 const streamVolume = $('#streamVolume');
 const streamStatus = $('#streamStatus');
+const podcastTimeline = $('#podcastTimeline');
+const podcastPosition = $('#podcastPosition');
+const podcastDuration = $('#podcastDuration');
+const podcastBreaks = $('#podcastBreaks');
+const podcastProgress = $('#podcastProgress');
+const podcastSeekLimit = $('#podcastSeekLimit');
 const playlistInput = $('#playlist');
 const playlistOptions = $('#playlistOptions');
 const activePlaylistName = $('#activePlaylistName');
@@ -44,6 +50,8 @@ let radioSettings = {
   podcast_selector_enabled: false,
   unplayed_episodes_per_source: 1,
   played_episodes_per_source: 1,
+  stream_delay_sec: 15,
+  podcast_seek_step_sec: 1,
 };
 let lastStatus = { state: 'stopped', mode: 'idle' };
 let playlistCatalog = [];
@@ -57,6 +65,8 @@ let streamWanted = false;
 let streamReconnectTimer = null;
 let streamReconnecting = false;
 let pendingReplay = null;
+let timelineScrubbing = false;
+let timelineBreakKey = '';
 let channelSources = [];
 let settingsDirty = false;
 
@@ -102,7 +112,7 @@ function cancelStreamReconnect() {
 }
 
 function scheduleStreamReconnect(delay = 2500) {
-  if (!streamWanted || pendingReplay || streamReconnectTimer !== null) return;
+  if (!streamWanted || pendingReplay || timelineScrubbing || streamReconnectTimer !== null) return;
   streamReconnectTimer = window.setTimeout(() => {
     streamReconnectTimer = null;
     reconnectStream();
@@ -119,7 +129,7 @@ function requestPlayerPlayback({ reload = false } = {}) {
 }
 
 async function reconnectStream() {
-  if (!streamWanted || pendingReplay || streamReconnecting) return;
+  if (!streamWanted || pendingReplay || timelineScrubbing || streamReconnecting) return;
   streamReconnecting = true;
   updateStreamControl('CONNECTING');
   try {
@@ -232,6 +242,57 @@ player.addEventListener('error', () => {
   scheduleStreamReconnect();
 });
 
+function formatPlaybackTime(value) {
+  const seconds = Math.max(0, Math.floor(Number(value) || 0));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  return hours
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`
+    : `${minutes}:${String(remainder).padStart(2, '0')}`;
+}
+
+function renderPodcastTimeline(status) {
+  const duration = Number(status.podcast_duration_sec);
+  if (!(duration > 0) || status.mode === 'preparing') {
+    podcastTimeline.hidden = true;
+    return;
+  }
+  const position = Math.min(duration, Math.max(0, Number(status.podcast_position_sec) || 0));
+  podcastTimeline.hidden = false;
+  podcastProgress.max = String(duration);
+  podcastProgress.step = String(radioSettings.podcast_seek_step_sec || 1);
+  if (!timelineScrubbing) {
+    podcastProgress.value = String(position);
+    podcastPosition.textContent = formatPlaybackTime(position);
+  }
+  podcastDuration.textContent = formatPlaybackTime(duration);
+  podcastProgress.setAttribute(
+    'aria-valuetext',
+    `${formatPlaybackTime(podcastProgress.value)} of ${formatPlaybackTime(duration)}`,
+  );
+  podcastProgress.parentElement.style.setProperty(
+    '--podcast-progress',
+    `${duration ? (Number(podcastProgress.value) / duration) * 100 : 0}%`,
+  );
+  const breaks = Array.isArray(status.music_breaks_sec) ? status.music_breaks_sec : [];
+  const breakKey = `${status.podcast_id}:${duration}:${breaks.join(',')}`;
+  if (breakKey !== timelineBreakKey) {
+    timelineBreakKey = breakKey;
+    podcastBreaks.replaceChildren(...breaks.map((breakPosition) => {
+      const marker = document.createElement('span');
+      marker.className = 'podcast-break';
+      marker.style.left = `${Math.min(100, Math.max(0, (Number(breakPosition) / duration) * 100))}%`;
+      marker.title = `Music break at ${formatPlaybackTime(breakPosition)}`;
+      return marker;
+    }));
+  }
+  const delay = Math.max(0, Math.round(Number(radioSettings.stream_delay_sec) || 0));
+  podcastSeekLimit.textContent = (
+    `SHARED SEEK · FULL EPISODE · ${podcastProgress.step} SEC STEPS · ~${delay} SEC APPLY`
+  );
+}
+
 function renderStatus(status) {
   let resumeReplay = false;
   if (pendingReplay) {
@@ -284,6 +345,7 @@ function renderStatus(status) {
   for (const button of document.querySelectorAll('.song-radio-button')) {
     button.textContent = isActive(status) ? 'SWAP SOURCE' : 'START RADIO';
   }
+  renderPodcastTimeline(status);
   if (resumeReplay) {
     updateStreamControl('CONNECTING');
     requestPlayerPlayback({ reload: true }).catch(() => {
@@ -303,6 +365,50 @@ async function refreshStatus() {
     detail.textContent = error.message;
   }
 }
+
+podcastProgress.addEventListener('input', () => {
+  timelineScrubbing = true;
+  const duration = Number(podcastProgress.max) || 1;
+  const position = Number(podcastProgress.value) || 0;
+  podcastPosition.textContent = formatPlaybackTime(position);
+  podcastProgress.setAttribute(
+    'aria-valuetext',
+    `${formatPlaybackTime(position)} of ${formatPlaybackTime(duration)}`,
+  );
+  podcastProgress.parentElement.style.setProperty(
+    '--podcast-progress',
+    `${(position / duration) * 100}%`,
+  );
+});
+
+podcastProgress.addEventListener('change', async () => {
+  timelineScrubbing = true;
+  const position = Number(podcastProgress.value) || 0;
+  const resumeAfterSeek = streamWanted;
+  podcastProgress.disabled = true;
+  cancelStreamReconnect();
+  player.pause();
+  streamConnected = false;
+  updateStreamControl('SEEKING');
+  try {
+    const data = await api('/api/seek', {
+      method: 'POST',
+      body: JSON.stringify({ position_sec: position }),
+    });
+    renderStatus(data.status);
+    timelineScrubbing = false;
+    if (resumeAfterSeek) {
+      await requestPlayerPlayback({ reload: true });
+    }
+    notify(`SEEKING TO ${formatPlaybackTime(position)}`);
+  } catch (error) {
+    notify(error.message, true);
+    await refreshStatus();
+  } finally {
+    timelineScrubbing = false;
+    podcastProgress.disabled = false;
+  }
+});
 
 startButton.addEventListener('click', async () => {
   startButton.disabled = true;

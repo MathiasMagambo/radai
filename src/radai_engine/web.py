@@ -87,6 +87,14 @@ class BufferedAudioStream:
     def delay_seconds(self) -> float:
         return self.lag_bytes / (128_000 / 8)
 
+    def reset(self) -> None:
+        with self._condition:
+            self._data.clear()
+            self._status_history.clear()
+            self._base = 0
+            self._generation += 1
+            self._condition.notify_all()
+
     def _run(self) -> None:
         while True:
             try:
@@ -174,6 +182,10 @@ class BufferedAudioStream:
             mode=delayed.mode,
             now_playing=delayed.now_playing,
             podcast=delayed.podcast,
+            podcast_id=delayed.podcast_id,
+            podcast_position_sec=delayed.podcast_position_sec,
+            podcast_duration_sec=delayed.podcast_duration_sec,
+            music_breaks_sec=delayed.music_breaks_sec,
             started_at=current.started_at,
             error=current.error,
             preparation_error=current.preparation_error,
@@ -337,6 +349,9 @@ class RadioApplication:
             "queued_video_title": settings.queued_video_title,
             "pending_video_id": settings.pending_video_id,
             "pending_video_title": settings.pending_video_title,
+            "stream_delay_sec": self.stream_buffer.delay_seconds,
+            "podcast_seek_scope": "shared",
+            "podcast_seek_step_sec": 1,
         }
 
 
@@ -443,6 +458,11 @@ class RadioHandler(BaseHTTPRequestHandler):
                     HTTPStatus.OK,
                     {"status": asdict(self.app.engine.restart_current_podcast())},
                 )
+                return
+            if parsed.path == "/api/seek":
+                status = self.app.engine.seek_current_podcast(float(body.get("position_sec", 0)))
+                self.app.stream_buffer.reset()
+                self._json(HTTPStatus.OK, {"status": asdict(status)})
                 return
             if parsed.path == "/api/settings":
                 settings = self.app.engine.update_settings(

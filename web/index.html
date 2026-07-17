@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/style.css?v=11">
+  <link rel="stylesheet" href="/style.css?v=12">
 </head>
 <body>
   <main>
@@ -65,8 +65,21 @@
       <div class="stream-player">
         <button id="streamPlay" class="stream-play" type="button" aria-label="Play live stream">PLAY</button>
         <div class="stream-readout" aria-live="polite">
-          <span class="stream-name"><i></i>LIVE STREAM</span>
-          <span id="streamStatus">READY</span>
+          <div class="stream-readout-head">
+            <span class="stream-name"><i></i>LIVE STREAM</span>
+            <span id="streamStatus">READY</span>
+          </div>
+          <div id="podcastTimeline" class="podcast-timeline" hidden>
+            <div class="podcast-timeline-times">
+              <output id="podcastPosition">0:00</output>
+              <span id="podcastDuration">0:00</span>
+            </div>
+            <div class="podcast-timeline-track">
+              <div id="podcastBreaks" class="podcast-breaks" aria-hidden="true"></div>
+              <input id="podcastProgress" type="range" min="0" max="1" step="1" value="0" aria-label="Podcast playback position" aria-describedby="podcastSeekLimit">
+            </div>
+            <small id="podcastSeekLimit">SHARED SEEK · FULL EPISODE</small>
+          </div>
         </div>
         <div class="stream-volume">
           <button id="streamMute" type="button" aria-label="Mute live stream">VOL</button>
@@ -243,6 +256,6 @@
       <span id="message" role="status"></span>
     </footer>
   </main>
-  <script src="/app.js?v=14" defer></script>
+  <script src="/app.js?v=15" defer></script>
 </body>
 </html>

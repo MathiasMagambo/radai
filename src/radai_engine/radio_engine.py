@@ -65,6 +65,10 @@ class RadioStatus:
     mode: str = "idle"
     now_playing: str = ""
     podcast: str = ""
+    podcast_id: str = ""
+    podcast_position_sec: float | None = None
+    podcast_duration_sec: float | None = None
+    music_breaks_sec: tuple[float, ...] = ()
     started_at: float | None = None
     error: str | None = None
     preparation_error: str | None = None
@@ -177,6 +181,7 @@ class RadioEngine:
             self.store.settings.podcast_checkpoint_position_sec
         )
         self._restart_podcast = threading.Event()
+        self._restart_position_sec = 0.0
         self._play_now_requested = threading.Event()
         self._backfill_episode_history()
         self._enforce_storage_retention()
@@ -206,6 +211,7 @@ class RadioEngine:
     def stop(self) -> RadioStatus:
         self._stop.set()
         self._restart_podcast.clear()
+        self._restart_position_sec = 0.0
         self._play_now_requested.clear()
         with self._lock:
             self._pause_generation += 1
@@ -291,11 +297,39 @@ class RadioEngine:
             self._playback_paused.clear()
             self._source_paused = False
             self._pending_music_source_change = False
+            self._restart_position_sec = 0.0
             self._restart_podcast.set()
             self._status.state = "running"
             self._status.detail = "Restarting podcast"
         self._terminate(self._active_decoder)
         self._checkpoint_podcast(episode_id, 0.0, force=True)
+        self._pause_spotify()
+        return self.status()
+
+    def seek_current_podcast(self, position_sec: float) -> RadioStatus:
+        with self._lock:
+            duration = self._status.podcast_duration_sec
+            episode_id = self._current_episode_id
+            if (
+                not episode_id
+                or duration is None
+                or duration <= 0
+                or self._status.state not in {"running", "paused"}
+            ):
+                raise RadioError("No seekable podcast is currently playing")
+            target = min(max(0.0, float(position_sec)), max(0.0, duration - 1.0))
+            self._pause_generation += 1
+            self._playback_paused.clear()
+            self._source_paused = False
+            self._pending_music_source_change = False
+            self._restart_position_sec = target
+            self._restart_podcast.set()
+            self._status.state = "starting"
+            self._status.mode = "preparing"
+            self._status.detail = f"Seeking podcast to {target:.0f}s"
+            self._status.podcast_position_sec = target
+        self._terminate(self._active_decoder)
+        self._checkpoint_podcast(episode_id, target, force=True)
         self._pause_spotify()
         return self.status()
 
@@ -811,6 +845,10 @@ class RadioEngine:
                 self._status.detail = f"Preparing {title}" if title else "Preparing selected podcast"
                 self._status.now_playing = ""
                 self._status.podcast = title or ""
+                self._status.podcast_id = ""
+                self._status.podcast_position_sec = None
+                self._status.podcast_duration_sec = None
+                self._status.music_breaks_sec = ()
                 self._status.error = None
         if active:
             self._terminate(decoder)
@@ -1042,8 +1080,7 @@ class RadioEngine:
                 boundaries.append(cleaned)
         boundaries.append(duration)
         boundaries = sorted(set(round(value, 3) for value in boundaries))
-        with self._lock:
-            self._status.podcast = downloaded.episode.title
+        music_breaks = tuple(boundaries[1:-1])
         settings = self.store.settings
         if settings.podcast_checkpoint_episode_id == episode_id:
             resume_position = min(
@@ -1053,6 +1090,12 @@ class RadioEngine:
         else:
             resume_position = 0.0
             self._checkpoint_podcast(episode_id, resume_position, force=True)
+        with self._lock:
+            self._status.podcast = downloaded.episode.title
+            self._status.podcast_id = episode_id
+            self._status.podcast_position_sec = resume_position
+            self._status.podcast_duration_sec = duration
+            self._status.music_breaks_sec = music_breaks
         while not self._stop.is_set():
             for index, (start, end) in enumerate(zip(boundaries, boundaries[1:])):
                 if end <= resume_position + 0.001:
@@ -1083,8 +1126,15 @@ class RadioEngine:
                     if self._restart_podcast.is_set():
                         break
             if self._restart_podcast.is_set():
-                self._restart_podcast.clear()
-                resume_position = 0.0
+                with self._lock:
+                    resume_position = min(
+                        duration,
+                        max(0.0, self._restart_position_sec),
+                    )
+                    self._restart_position_sec = 0.0
+                    self._restart_podcast.clear()
+                    self._status.podcast_position_sec = resume_position
+                self._checkpoint_podcast(episode_id, resume_position, force=True)
                 continue
             return not self._stop.is_set()
         return False
@@ -1140,6 +1190,9 @@ class RadioEngine:
                 / (self.sample_rate * self.channels * self.sample_width),
             )
             if not self._restart_podcast.is_set():
+                with self._lock:
+                    self._status.podcast_position_sec = position
+            if not self._restart_podcast.is_set():
                 self._checkpoint_podcast(episode_id, position)
 
         try:
@@ -1158,6 +1211,8 @@ class RadioEngine:
                 and not self._play_now_requested.is_set()
             ):
                 position = end
+                with self._lock:
+                    self._status.podcast_position_sec = position
         finally:
             if not self._restart_podcast.is_set():
                 self._checkpoint_podcast(episode_id, position, force=True)

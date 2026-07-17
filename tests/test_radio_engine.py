@@ -514,8 +514,24 @@ def test_pause_completes_partial_mp3_frame_before_holding_stream() -> None:
 
 
 def test_playback_status_follows_the_lagged_audio_cursor() -> None:
-    podcast = RadioStatus(state="running", mode="podcast", now_playing="Podcast")
-    music = RadioStatus(state="running", mode="music", now_playing="Song")
+    podcast = RadioStatus(
+        state="running",
+        mode="podcast",
+        now_playing="Podcast",
+        podcast_id="episode-1",
+        podcast_position_sec=90.0,
+        podcast_duration_sec=600.0,
+        music_breaks_sec=(120.0, 360.0),
+    )
+    music = RadioStatus(
+        state="running",
+        mode="music",
+        now_playing="Song",
+        podcast_id="episode-1",
+        podcast_position_sec=120.0,
+        podcast_duration_sec=600.0,
+        music_breaks_sec=(120.0, 360.0),
+    )
     stream = object.__new__(BufferedAudioStream)
     stream.status_source = lambda: music
     stream.lag_bytes = 100
@@ -525,10 +541,29 @@ def test_playback_status_follows_the_lagged_audio_cursor() -> None:
     stream._status_history = deque(((0, podcast), (150, music)))
 
     assert stream.playback_status().now_playing == "Podcast"
+    assert stream.playback_status().podcast_position_sec == 90.0
+    assert stream.playback_status().music_breaks_sec == (120.0, 360.0)
 
     stream._data.extend(bytes(100))
 
     assert stream.playback_status().now_playing == "Song"
+    assert stream.playback_status().podcast_position_sec == 120.0
+
+
+def test_stream_reset_discards_audio_and_status_history() -> None:
+    stream = object.__new__(BufferedAudioStream)
+    stream._condition = threading.Condition()
+    stream._data = bytearray(b"old audio")
+    stream._status_history = deque(((10, RadioStatus(state="running")),))
+    stream._base = 10
+    stream._generation = 2
+
+    stream.reset()
+
+    assert stream._data == bytearray()
+    assert stream._status_history == deque()
+    assert stream._base == 0
+    assert stream._generation == 3
 
 
 
@@ -619,6 +654,86 @@ def test_queued_episode_is_consumed_when_playback_starts() -> None:
     engine._run()
 
     assert events == ["choose", "stream", "consume", "play", "wait", "mark", "prepare", "choose"]
+
+
+def test_seek_restarts_current_podcast_at_bounded_position() -> None:
+    checkpoints: list[tuple[str, float, bool]] = []
+    interrupted: list[object] = []
+    engine = object.__new__(RadioEngine)
+    engine._lock = threading.RLock()
+    engine._current_episode_id = "episode-1"
+    engine._status = RadioStatus(
+        state="running",
+        mode="podcast",
+        podcast_id="episode-1",
+        podcast_position_sec=120.0,
+        podcast_duration_sec=600.0,
+    )
+    engine._pause_generation = 0
+    engine._playback_paused = threading.Event()
+    engine._source_paused = False
+    engine._pending_music_source_change = False
+    engine._restart_position_sec = 0.0
+    engine._restart_podcast = threading.Event()
+    engine._active_decoder = object()
+    engine._terminate = interrupted.append  # type: ignore[method-assign]
+    engine._pause_spotify = lambda: interrupted.append("spotify")  # type: ignore[method-assign]
+    engine._checkpoint_podcast = (  # type: ignore[method-assign]
+        lambda episode_id, position, *, force: checkpoints.append(
+            (episode_id, position, force)
+        )
+    )
+
+    status = engine.seek_current_podcast(999.0)
+
+    assert status.state == "starting"
+    assert status.mode == "preparing"
+    assert status.podcast_position_sec == 599.0
+    assert engine._restart_position_sec == 599.0
+    assert engine._restart_podcast.is_set()
+    assert checkpoints == [("episode-1", 599.0, True)]
+    assert interrupted == [engine._active_decoder, "spotify"]
+
+
+def test_episode_status_exposes_duration_and_music_breaks() -> None:
+    captured: list[RadioStatus] = []
+    engine = object.__new__(RadioEngine)
+    engine._lock = threading.RLock()
+    engine._stop = threading.Event()
+    engine._play_now_requested = threading.Event()
+    engine._restart_podcast = threading.Event()
+    engine._playback_paused = threading.Event()
+    engine._restart_position_sec = 0.0
+    engine._status = RadioStatus(state="running")
+    engine.store = SimpleNamespace(
+        settings=RadioSettings(music_placement="ads"),
+    )
+    engine._duration = lambda _path: 600.0  # type: ignore[method-assign]
+    engine._checkpoint_podcast = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+
+    def play_segment(*_args, **_kwargs) -> None:
+        captured.append(engine.status())
+        engine._stop.set()
+
+    engine._play_podcast_segment = play_segment  # type: ignore[method-assign]
+    downloaded = SimpleNamespace(
+        episode=SimpleNamespace(id="episode-1", title="Episode One"),
+    )
+    plan = SimpleNamespace(
+        ad_cuts=(SimpleNamespace(start_sec=120.0, end_sec=150.0),),
+        music_insertions=(),
+    )
+
+    assert not engine._play_episode(
+        downloaded,
+        Path("episode.mp3"),
+        plan,
+    )
+    assert len(captured) == 1
+    assert captured[0].podcast_id == "episode-1"
+    assert captured[0].podcast_position_sec == 0.0
+    assert captured[0].podcast_duration_sec == 600.0
+    assert captured[0].music_breaks_sec == (120.0,)
 
 
 def test_restart_podcast_is_disabled_by_default() -> None:
