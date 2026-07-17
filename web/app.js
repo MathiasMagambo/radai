@@ -56,6 +56,7 @@ let streamConnected = false;
 let streamWanted = false;
 let streamReconnectTimer = null;
 let streamReconnecting = false;
+let pendingReplay = null;
 let channelSources = [];
 let settingsDirty = false;
 
@@ -101,7 +102,7 @@ function cancelStreamReconnect() {
 }
 
 function scheduleStreamReconnect(delay = 2500) {
-  if (!streamWanted || streamReconnectTimer !== null) return;
+  if (!streamWanted || pendingReplay || streamReconnectTimer !== null) return;
   streamReconnectTimer = window.setTimeout(() => {
     streamReconnectTimer = null;
     reconnectStream();
@@ -118,7 +119,7 @@ function requestPlayerPlayback({ reload = false } = {}) {
 }
 
 async function reconnectStream() {
-  if (!streamWanted || streamReconnecting) return;
+  if (!streamWanted || pendingReplay || streamReconnecting) return;
   streamReconnecting = true;
   updateStreamControl('CONNECTING');
   try {
@@ -147,6 +148,7 @@ async function reconnectStream() {
 }
 
 async function pausePlayback() {
+  if (pendingReplay) pendingReplay.resumeWanted = false;
   streamWanted = false;
   cancelStreamReconnect();
   player.pause();
@@ -158,6 +160,12 @@ async function pausePlayback() {
 }
 
 async function playPlayback() {
+  if (pendingReplay) {
+    streamWanted = true;
+    pendingReplay.resumeWanted = true;
+    updateStreamControl('PREPARING');
+    return;
+  }
   streamWanted = true;
   updateStreamControl('CONNECTING');
   const current = await api('/api/status');
@@ -215,7 +223,7 @@ player.addEventListener('ended', () => {
   scheduleStreamReconnect(250);
 });
 player.addEventListener('pause', () => {
-  updateStreamControl(streamWanted ? 'BUFFERING' : 'PAUSED');
+  updateStreamControl(pendingReplay ? 'PREPARING' : (streamWanted ? 'BUFFERING' : 'PAUSED'));
   if (streamWanted) scheduleStreamReconnect(500);
 });
 player.addEventListener('error', () => {
@@ -225,6 +233,38 @@ player.addEventListener('error', () => {
 });
 
 function renderStatus(status) {
+  let resumeReplay = false;
+  if (pendingReplay) {
+    if (status.state === 'error') {
+      pendingReplay = null;
+      renderPodcastHistory();
+    } else {
+      if (status.state === 'starting' || status.mode === 'preparing') {
+        pendingReplay.observed = true;
+      }
+      const replayReady = (
+        status.state === 'running'
+        && status.mode === 'podcast'
+        && status.now_playing === pendingReplay.title
+        && (pendingReplay.observed || status.now_playing !== pendingReplay.previousTitle)
+      );
+      if (replayReady) {
+        resumeReplay = pendingReplay.resumeWanted && streamWanted;
+        pendingReplay = null;
+        renderPodcastHistory();
+      } else {
+        status = {
+          ...status,
+          state: 'starting',
+          detail: `Preparing ${pendingReplay.title}`,
+          mode: 'preparing',
+          now_playing: '',
+          podcast: pendingReplay.title,
+          error: null,
+        };
+      }
+    }
+  }
   lastStatus = status;
   stateText.textContent = status.state.toUpperCase();
   stateDot.classList.toggle('live', status.state === 'running');
@@ -243,6 +283,13 @@ function renderStatus(status) {
   );
   for (const button of document.querySelectorAll('.song-radio-button')) {
     button.textContent = isActive(status) ? 'SWAP SOURCE' : 'START RADIO';
+  }
+  if (resumeReplay) {
+    updateStreamControl('CONNECTING');
+    requestPlayerPlayback({ reload: true }).catch(() => {
+      updateStreamControl('BUFFERING');
+      scheduleStreamReconnect(3000);
+    });
   }
 }
 
@@ -700,34 +747,39 @@ function renderPodcastHistory() {
     channel.textContent = item.channel;
     copy.append(title, channel);
     const button = document.createElement('button');
+    const replaying = item.prepared && pendingReplay?.title === item.title;
     button.type = 'button';
-    button.textContent = item.prepared ? 'PLAY AGAIN' : (item.preparing ? 'PREPARING…' : 'PREPARE');
-    button.disabled = item.preparing;
+    button.textContent = replaying
+      ? 'PREPARING…'
+      : (item.prepared ? 'PLAY AGAIN' : (item.preparing ? 'PREPARING…' : 'PREPARE'));
+    button.disabled = item.preparing || replaying;
     button.classList.toggle('primary', item.prepared);
+    if (replaying) button.setAttribute('aria-busy', 'true');
     button.addEventListener('click', async () => {
       const previousStatus = lastStatus;
       button.disabled = true;
       button.setAttribute('aria-busy', 'true');
       try {
         if (item.prepared) {
+          pendingReplay = {
+            title: item.title,
+            previousTitle: lastStatus.now_playing || '',
+            resumeWanted: streamWanted,
+            observed: false,
+          };
+          cancelStreamReconnect();
+          player.pause();
+          streamConnected = false;
+          updateStreamControl('PREPARING');
           button.textContent = 'PREPARING…';
-          renderStatus({
-            ...lastStatus,
-            state: 'starting',
-            detail: `Preparing ${item.title}`,
-            mode: 'preparing',
-            now_playing: '',
-            podcast: item.title,
-            error: null,
-          });
+          renderStatus(lastStatus);
           notify(`PREPARING: ${item.title}`);
           const data = await api('/api/history', {
             method: 'POST',
             body: JSON.stringify({ id: item.id, action: 'play_again' }),
           });
           renderSettings(data.settings);
-          renderStatus(data.status);
-          if (player.paused) await playPlayback();
+          await refreshStatus();
           notify(`SWITCHING PODCAST: ${item.title}`);
         } else {
           await api('/api/history', {
@@ -740,12 +792,16 @@ function renderPodcastHistory() {
         }
       } catch (error) {
         item.preparing = false;
+        const resumeAfterFailure = pendingReplay?.resumeWanted && streamWanted;
+        pendingReplay = null;
         if (item.prepared) renderStatus(previousStatus);
+        if (resumeAfterFailure) requestPlayerPlayback({ reload: true }).catch(() => {});
         notify(error.message, true);
       } finally {
-        button.removeAttribute('aria-busy');
-        button.disabled = item.preparing;
-        if (item.prepared) button.textContent = 'PLAY AGAIN';
+        const replaying = item.prepared && pendingReplay?.title === item.title;
+        if (!replaying) button.removeAttribute('aria-busy');
+        button.disabled = item.preparing || replaying;
+        if (item.prepared) button.textContent = replaying ? 'PREPARING…' : 'PLAY AGAIN';
         else if (!item.preparing) button.textContent = 'PREPARE';
       }
     });
