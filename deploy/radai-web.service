@@ -8,7 +8,7 @@ Type=simple
 WorkingDirectory=/opt/radai
 EnvironmentFile=/opt/radai/.env
 ExecStart=/opt/radai/.venv/bin/python -m radai_engine.web
-Restart=on-failure
+Restart=always
 RestartSec=5
 
 [Install]
