@@ -2,6 +2,8 @@
 Radai is an attempt to create a radio experience using podcasts and Spotify. If you like listening to podcasts, love listening to music and want to do both at the same time, I've made this for you. Any suggestions and contributions are welcome. Email me at me@mathiasmagambo.com if you want me to help you set this up for you (at a fee).
 It's a private, always-on internet radio station that combines prepared YouTube podcasts with Spotify music breaks. It runs on your server, streams through the web interface, and keeps running even after the browser is closed.
 
+<img width="1833" height="930" alt="image" src="https://github.com/user-attachments/assets/81bb0120-5252-4cde-bf87-41d9b7e7141a" />
+
 ### HOW IT WORKS
 The podcast is pulled from Youtube with a transcript. The transcript is run through an AI model of your choice (currently DeepSeek, will configure other models later) to generate cut timetamps where ads are or based on topics. 
 Music gets played in between the podcast ad breaks using Spotify. 
@@ -34,9 +36,6 @@ This is only for the main features and updates. Everything else is in FEATURES.m
 - Use your saved playlists as the saved music sources by default.
 - See history of played podcasts.
 - See where the music breaks are and how many they are.
-
-### INTERFACE
-<img width="1833" height="930" alt="image" src="https://github.com/user-attachments/assets/81bb0120-5252-4cde-bf87-41d9b7e7141a" />
 
  ### Audio and web stack
 
