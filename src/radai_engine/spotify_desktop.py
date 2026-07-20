@@ -97,13 +97,21 @@ class SpotifyDesktopController:
             (async () => {
               const library = document.querySelector('[aria-label="Your Library"]');
               if (!library) throw new Error('Spotify saved library is unavailable');
-              const candidates = [library, ...library.querySelectorAll('*')]
-                .filter((item) => item.scrollHeight > item.clientHeight + 20);
-              const scroller = candidates.sort((a, b) => b.scrollHeight - a.scrollHeight)[0] || library;
+              let scroller = library.parentElement;
+              while (scroller) {
+                const overflowY = getComputedStyle(scroller).overflowY;
+                if (
+                  scroller.scrollHeight > scroller.clientHeight + 20
+                  && (overflowY === 'auto' || overflowY === 'scroll')
+                ) break;
+                scroller = scroller.parentElement;
+              }
+              if (!scroller) throw new Error('Spotify library scroller is unavailable');
               const original = scroller.scrollTop;
               const found = new Map();
-              let stableAtBottom = 0;
-              for (let attempt = 0; attempt < 200; attempt += 1) {
+              scroller.scrollTop = 0;
+              await new Promise((resolve) => setTimeout(resolve, 100));
+              for (let attempt = 0; attempt < 500; attempt += 1) {
                 for (const title of library.querySelectorAll(
                   '[id^="listrow-title-spotify:playlist:"]'
                 )) {
@@ -112,15 +120,17 @@ class SpotifyDesktopController:
                   const name = (title.textContent || '').trim();
                   if (id && name && !found.has(id)) found.set(id, name);
                 }
+                if (
+                  scroller.scrollTop + scroller.clientHeight
+                  >= scroller.scrollHeight - 2
+                ) break;
                 const previous = scroller.scrollTop;
                 scroller.scrollTop = Math.min(
-                  scroller.scrollHeight,
+                  scroller.scrollHeight - scroller.clientHeight,
                   previous + Math.max(scroller.clientHeight * 0.8, 240)
                 );
-                await new Promise((resolve) => setTimeout(resolve, 40));
-                const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2;
-                stableAtBottom = atBottom && scroller.scrollTop === previous ? stableAtBottom + 1 : 0;
-                if (stableAtBottom >= 2) break;
+                await new Promise((resolve) => setTimeout(resolve, 100));
+                if (scroller.scrollTop === previous) break;
               }
               scroller.scrollTop = original;
               return Array.from(found, ([id, name]) => ({id, name}));
