@@ -1,6 +1,6 @@
 #### RADAI
-Radai is an attempt to create a radio experience using podcasts and Spotify. If you like listening to podcasts, love listening to music and want to do both at the same time, I've made this for you. Any suggestions and contributions are welcome. Email me at me@mathiasmagambo.com if you want me to help you set this up for you (at a fee).
-It's a private, always-on internet radio station that combines prepared YouTube podcasts with Spotify music breaks. It runs on your server, streams through the web interface, and keeps running even after the browser is closed.
+Radai is an attempt to create a radio experience using podcasts and Spotify. If you like listening to podcasts, love listening to music and want to do both at the same time, I've made this for you.  
+It's a private, always-on internet radio station that combines prepared YouTube podcasts with Spotify music breaks. It runs on your server, streams through the web interface, and keeps running even after the browser is closed. Any suggestions and contributions are welcome. Email me at me@mathiasmagambo.com if you want me to help you set this up for you (at a fee).
 
 <img width="1833" height="930" alt="image" src="https://github.com/user-attachments/assets/81bb0120-5252-4cde-bf87-41d9b7e7141a" />
 
