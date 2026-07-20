@@ -59,6 +59,7 @@ let radioSettings = {
 let lastStatus = { state: 'stopped', mode: 'idle' };
 let playlistCatalog = [];
 let proposedPlaylist = null;
+let playlistChoiceIndex = -1;
 let preparedPodcasts = [];
 let podcastChoiceIndex = -1;
 let podcastChoicePending = false;
@@ -810,13 +811,60 @@ async function loadPlaylists() {
   try {
     const data = await api('/api/playlists');
     playlistCatalog = data.playlists;
-    playlistOptions.replaceChildren(...playlistCatalog.map((item) => {
-      const option = document.createElement('option');
-      option.value = item.name;
-      option.label = item.tracks_total ? `${item.name} · ${item.tracks_total}` : item.name;
-      return option;
-    }));
+    renderPlaylistOptions();
   } catch (error) { notify(error.message, true); }
+}
+
+function hidePlaylistOptions() {
+  playlistChoiceIndex = -1;
+  playlistOptions.hidden = true;
+  playlistInput.setAttribute('aria-expanded', 'false');
+  playlistInput.removeAttribute('aria-activedescendant');
+}
+
+function selectPlaylistOption(item) {
+  playlistInput.value = item.name;
+  syncPlaylistClearButton();
+  hidePlaylistOptions();
+  proposePlaylistChange(item);
+}
+
+function renderPlaylistOptions() {
+  const query = playlistInput.value.trim().toLocaleLowerCase();
+  const matches = playlistCatalog.filter(
+    (item) => item.name.toLocaleLowerCase().includes(query)
+  );
+  playlistChoiceIndex = -1;
+  playlistOptions.replaceChildren(...matches.map((item, index) => {
+    const option = document.createElement('button');
+    option.id = `playlist-option-${index}`;
+    option.className = 'playlist-option';
+    option.type = 'button';
+    option.role = 'option';
+    option.dataset.uri = item.uri;
+    option.textContent = item.name;
+    option.setAttribute('aria-selected', 'false');
+    option.addEventListener('click', () => selectPlaylistOption(item));
+    return option;
+  }));
+  const open = document.activeElement === playlistInput && matches.length > 0;
+  playlistOptions.hidden = !open;
+  playlistInput.setAttribute('aria-expanded', String(open));
+  playlistInput.removeAttribute('aria-activedescendant');
+}
+
+function movePlaylistChoice(direction) {
+  const options = Array.from(playlistOptions.querySelectorAll('.playlist-option'));
+  if (!options.length) return;
+  playlistChoiceIndex = (
+    playlistChoiceIndex + direction + options.length
+  ) % options.length;
+  options.forEach((option, index) => {
+    option.setAttribute('aria-selected', String(index === playlistChoiceIndex));
+  });
+  const selected = options[playlistChoiceIndex];
+  playlistInput.setAttribute('aria-activedescendant', selected.id);
+  selected.scrollIntoView({ block: 'nearest' });
 }
 
 function syncPlaylistClearButton() {
@@ -837,9 +885,11 @@ function hidePlaylistConfirmation() {
   syncActiveSourceClearButton();
 }
 
-function proposePlaylistChange() {
+function proposePlaylistChange(selection = null) {
   const value = playlistInput.value.trim();
-  const match = playlistCatalog.find((item) => item.name.toLowerCase() === value.toLowerCase());
+  const match = selection || playlistCatalog.find(
+    (item) => item.name.toLowerCase() === value.toLowerCase()
+  );
   if (value && !match) {
     hidePlaylistConfirmation();
     return;
@@ -855,14 +905,35 @@ function proposePlaylistChange() {
   syncActiveSourceClearButton();
 }
 
+playlistInput.addEventListener('focus', renderPlaylistOptions);
 playlistInput.addEventListener('input', () => {
   syncPlaylistClearButton();
   proposePlaylistChange();
+  renderPlaylistOptions();
 });
 playlistInput.addEventListener('change', proposePlaylistChange);
+playlistInput.addEventListener('keydown', (event) => {
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    if (playlistOptions.hidden) renderPlaylistOptions();
+    movePlaylistChoice(event.key === 'ArrowDown' ? 1 : -1);
+    return;
+  }
+  if (event.key === 'Enter' && playlistChoiceIndex >= 0) {
+    event.preventDefault();
+    const selected = playlistOptions.querySelectorAll('.playlist-option')[playlistChoiceIndex];
+    const item = playlistCatalog.find((candidate) => candidate.uri === selected?.dataset.uri);
+    if (item) selectPlaylistOption(item);
+    return;
+  }
+  if (event.key === 'Escape') hidePlaylistOptions();
+});
 playlistInput.addEventListener('dblclick', () => {
   playlistInput.select();
-  if (typeof playlistInput.showPicker === 'function') playlistInput.showPicker();
+  renderPlaylistOptions();
+});
+document.addEventListener('click', (event) => {
+  if (!event.target.closest('.playlist-picker')) hidePlaylistOptions();
 });
 playlistClear.addEventListener('click', () => {
   playlistInput.value = '';

@@ -102,11 +102,11 @@
         </div>
         <label for="playlist">Saved playlist</label>
         <div class="playlist-picker">
-          <input id="playlist" type="search" list="playlistOptions" placeholder="Random saved playlist" autocomplete="off" aria-describedby="playlistHint">
+          <input id="playlist" type="search" placeholder="Random saved playlist" autocomplete="off" aria-autocomplete="list" aria-controls="playlistOptions" aria-expanded="false" aria-describedby="playlistHint">
           <button id="playlistClear" class="playlist-clear" type="button" aria-label="Clear playlist search" hidden>
             <span aria-hidden="true">×</span>
           </button>
-          <datalist id="playlistOptions"></datalist>
+          <div id="playlistOptions" class="playlist-options" role="listbox" hidden></div>
         </div>
         <div id="activePlaylist" class="active-source">
           <span id="activePlaylistLabel" class="label">CURRENT MUSIC SOURCE</span>
@@ -120,7 +120,7 @@
             <button id="playlistCancel" type="button">KEEP CURRENT</button>
           </div>
         </div>
-        <p id="playlistHint" class="hint">Open the dropdown or double-click and type to search every saved Spotify playlist.</p>
+        <p id="playlistHint" class="hint">Open the dropdown to browse every saved Spotify playlist, or type to filter the complete list.</p>
 
       </section>
 
