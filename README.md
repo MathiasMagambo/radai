@@ -169,7 +169,7 @@ This is only for the main features and updates. Everything else is in FEATURES.m
 
  5. Authenticate Spotify
 
- Run Spotify Desktop as the same Linux user that will run Radai. Sign into your Spotify account once.
+ Run Spotify Desktop as the same Linux user that will run Radai. Sign into your Spotify account once. If you're running a headless server you can open Spotify with a GUI using Xvfb and log in using your qr code. 
 
  Authenticate spotifyd as that same user:
 
