@@ -78,6 +78,7 @@ let timelineAction = 'seek';
 let musicBreakSelectionEpisodeId = null;
 let pendingMusicBreak = null;
 let lastMusicBreakError = '';
+let lastPreparationWarning = '';
 let channelSources = [];
 let settingsDirty = false;
 
@@ -412,6 +413,9 @@ function renderStatus(status) {
   podcast.textContent = status.podcast && status.podcast !== status.now_playing ? `PODCAST: ${status.podcast}` : '';
   preparationError.hidden = !status.preparation_error;
   preparationError.textContent = status.preparation_error || '';
+  const warning = status.preparation_warning || '';
+  if (warning && warning !== lastPreparationWarning) notify(warning);
+  if (warning) lastPreparationWarning = warning;
   startButton.disabled = isActive(status);
   stopButton.disabled = !isActive(status) && status.state !== 'error';
   restartPodcast.hidden = !(
@@ -959,7 +963,6 @@ $('#playlistApply').addEventListener('click', async () => {
     playlistInput.value = '';
     hidePlaylistConfirmation();
     renderSettings(data.settings);
-    if (selection.name && !streamWanted) await playPlayback();
     notify(selection.name ? `PLAYLIST: ${selection.name}` : 'PLAYLIST: RANDOM');
   } catch (error) {
     notify(error.message, true);

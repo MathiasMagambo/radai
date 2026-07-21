@@ -74,6 +74,7 @@ class RadioStatus:
     started_at: float | None = None
     error: str | None = None
     preparation_error: str | None = None
+    preparation_warning: str | None = None
 
 
 class StateStore:
@@ -696,6 +697,8 @@ class RadioEngine:
             self._prepare_now.wait(timeout=30 * 60)
 
     def _prepare_missing_channels(self) -> None:
+        with self._lock:
+            self._status.preparation_warning = None
         channels = list(self.store.settings.channels)
         errors: list[str] = []
         for channel in channels:
@@ -749,8 +752,9 @@ class RadioEngine:
                     self.transcript_dir,
                     yt_dlp=self._yt_dlp(),
                     extra_args=self._yt_dlp_options(),
+                    require_transcript=False,
                 )
-                plan = self._plan_episode(downloaded)
+                plan = self._plan_episode_or_fallback(downloaded)
                 self._remove_ads(downloaded, plan.ad_cuts)
             else:
                 downloaded = prepared[0]
@@ -834,6 +838,7 @@ class RadioEngine:
 
     def _prepare_on_demand_episode(self, episode: YouTubeEpisode) -> DownloadedEpisode:
         with self._lock:
+            self._status.preparation_warning = None
             if self._status.state == "stopped":
                 self._status.detail = f"Preparing {episode.title}"
         downloaded = download_episode(
@@ -844,24 +849,7 @@ class RadioEngine:
             extra_args=self._yt_dlp_options(),
             require_transcript=False,
         )
-        if downloaded.transcript_path.stat().st_size:
-            plan = self._plan_episode(downloaded)
-        else:
-            plan = DeepSeekPlan(episode_id=episode.id)
-            self.processed_dir.mkdir(parents=True, exist_ok=True)
-            (self.processed_dir / f"{episode.id}.plan.json").write_text(
-                json.dumps(
-                    {
-                        "episode_id": episode.id,
-                        "ad_cuts": [],
-                        "music_insertions": [],
-                        "confidence": 0.0,
-                        "warnings": ["Video has no transcript; playing without analysis."],
-                    },
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
+        plan = self._plan_episode_or_fallback(downloaded)
         self._remove_ads(downloaded, plan.ad_cuts)
         self._remember_episode(downloaded)
         self.store.save()
@@ -1089,6 +1077,33 @@ class RadioEngine:
         self.store.save()
         if action == "play_now":
             self._request_play_now(title)
+
+    def _plan_episode_or_fallback(self, downloaded: DownloadedEpisode) -> DeepSeekPlan:
+        if downloaded.transcript_path.stat().st_size:
+            return self._plan_episode(downloaded)
+        warning = (
+            f"No transcript was found for {downloaded.episode.title}; "
+            "playing without transcript analysis."
+        )
+        plan = DeepSeekPlan(episode_id=downloaded.episode.id, warnings=(warning,))
+        self.processed_dir.mkdir(parents=True, exist_ok=True)
+        (self.processed_dir / f"{downloaded.episode.id}.plan.json").write_text(
+            json.dumps(
+                {
+                    "episode_id": plan.episode_id,
+                    "ad_cuts": [],
+                    "music_insertions": [],
+                    "confidence": plan.confidence,
+                    "warnings": list(plan.warnings),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        with self._lock:
+            self._status.preparation_warning = warning
+        return plan
+
 
     def _plan_episode(self, downloaded: DownloadedEpisode) -> DeepSeekPlan:
         transcript = downloaded.transcript_path.read_text(encoding="utf-8")

@@ -191,6 +191,7 @@ class BufferedAudioStream:
             started_at=current.started_at,
             error=current.error,
             preparation_error=current.preparation_error,
+            preparation_warning=current.preparation_warning,
         )
 
     def _listener_started(self) -> None:

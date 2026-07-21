@@ -1162,7 +1162,7 @@ def test_channel_preparation_keeps_configured_latest_unplayed_episodes(monkeypat
     engine.processed_dir = tmp_path / "processed"
     engine._yt_dlp = lambda: "yt-dlp"  # type: ignore[method-assign]
     engine._yt_dlp_options = lambda: ()  # type: ignore[method-assign]
-    engine._plan_episode = lambda downloaded: SimpleNamespace(ad_cuts=())  # type: ignore[method-assign]
+    engine._plan_episode_or_fallback = lambda downloaded: SimpleNamespace(ad_cuts=())  # type: ignore[method-assign]
     engine._remove_ads = lambda downloaded, cuts: tmp_path / "second.mp3"  # type: ignore[method-assign]
     engine._prepared_by_id = lambda *_args: None  # type: ignore[method-assign]
     engine._remember_episode = lambda *_args: None  # type: ignore[method-assign]
@@ -1181,6 +1181,78 @@ def test_channel_preparation_keeps_configured_latest_unplayed_episodes(monkeypat
 
     assert selected == [second_latest, third_latest]
     assert settings.prepared_episodes == {"channel-a": ["second", "third"]}
+
+
+def test_channel_preparation_keeps_episode_when_transcript_is_missing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    episode = SimpleNamespace(id="no-transcript", title="Episode without transcript", channel="Channel")
+    settings = RadioSettings(channels=["channel-a"])
+    engine = object.__new__(RadioEngine)
+    engine.store = SimpleNamespace(settings=settings, save=lambda: None)
+    engine._lock = threading.RLock()
+    engine._status = RadioStatus()
+    engine.media_dir = tmp_path / "media"
+    engine.transcript_dir = tmp_path / "transcripts"
+    engine.processed_dir = tmp_path / "processed"
+    engine._yt_dlp = lambda: "yt-dlp"  # type: ignore[method-assign]
+    engine._yt_dlp_options = lambda: ()  # type: ignore[method-assign]
+    engine._prepared_by_id = lambda *_args: None  # type: ignore[method-assign]
+    engine._remember_episode = lambda *_args: None  # type: ignore[method-assign]
+    engine._plan_episode = lambda _downloaded: pytest.fail("LLM planning must be skipped")  # type: ignore[method-assign]
+    download_options: list[bool] = []
+
+    monkeypatch.setattr(
+        "radai_engine.radio_engine.list_channel_episodes",
+        lambda *args, **kwargs: (episode,),
+    )
+
+    def download(selected, *args, **kwargs):
+        transcript_path = engine.transcript_dir / f"{selected.id}.txt"
+        transcript_path.parent.mkdir(parents=True)
+        transcript_path.write_text("", encoding="utf-8")
+        engine.media_dir.mkdir(parents=True, exist_ok=True)
+        (engine.media_dir / f"{selected.id}.info.json").write_text(
+            json.dumps(
+                {
+                    "title": selected.title,
+                    "channel": selected.channel,
+                    "webpage_url": f"https://youtube.com/watch?v={selected.id}",
+                }
+            ),
+            encoding="utf-8",
+        )
+        download_options.append(kwargs["require_transcript"])
+        return SimpleNamespace(episode=selected, transcript_path=transcript_path)
+
+    def remove_ads(_downloaded, cuts):
+        output = engine.processed_dir / f"{episode.id}.mp3"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"audio")
+        assert cuts == ()
+        return output
+
+    monkeypatch.setattr("radai_engine.radio_engine.download_episode", download)
+    engine._remove_ads = remove_ads  # type: ignore[method-assign]
+
+    engine._prepare_channel("channel-a")
+
+    plan = json.loads(
+        (engine.processed_dir / f"{episode.id}.plan.json").read_text(encoding="utf-8")
+    )
+    assert download_options == [False]
+    assert settings.prepared_episodes == {"channel-a": [episode.id]}
+    assert plan["ad_cuts"] == []
+    assert plan["music_insertions"] == []
+    assert plan["warnings"] == [
+        "No transcript was found for Episode without transcript; playing without transcript analysis."
+    ]
+    assert engine._status.preparation_warning == plan["warnings"][0]
+    prepared = RadioEngine._prepared_by_id(engine, episode.id, "channel-a")
+    assert prepared is not None
+    assert prepared[0].episode.title == episode.title
+    assert prepared[1].read_bytes() == b"audio"
 
 
 def test_podcast_chooser_queues_prepared_episode_and_rotation_continues_after_it() -> None:
