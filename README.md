@@ -31,7 +31,7 @@ This is only for the main features and updates. Everything else is in FEATURES.m
 - Add links to YouTube channels as podcast sources. New episodes are pulled periodically.
 - Add a single video link and listen to it immediately.
 - Set how many new podcasts per channel you want stored on the server and how many played podcasts you want saved. 
-- Add extra music breaks as you listen to a podcast.
+- Add extra music breaks as you listen to a podcast. Click the ADD MUSIC BREAK button and scrub along the timeline to where you want a break.
 - You can search for a song in the Spotify search and use the song's Song Radio as a music source.
 - Use your saved playlists as the saved music sources by default.
 - See history of played podcasts.
